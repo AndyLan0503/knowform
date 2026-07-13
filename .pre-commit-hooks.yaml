@@ -1,0 +1,20 @@
+# pre-commit hook definitions for knowform.
+#
+# Add to a consuming repo's .pre-commit-config.yaml:
+#
+#   repos:
+#     - repo: https://github.com/andylan/knowform
+#       rev: v0.1.0
+#       hooks:
+#         - id: knowform
+#
+# It runs the read-only drift report on every commit. It is advisory: the
+# report never fails the commit while the judge's precision is unproven. Once
+# you trust the judge, raise the hook to a blocking check of your choosing.
+- id: knowform
+  name: knowform (doc↔code drift)
+  description: Report doc↔code drift with knowform plan.
+  entry: knowform plan
+  language: python
+  pass_filenames: false
+  always_run: true

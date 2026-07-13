@@ -1,0 +1,31 @@
+name: "knowform"
+description: "Terraform for docs — report doc↔code drift (plan / sync / apply)."
+branding:
+  icon: "git-pull-request"
+  color: "purple"
+
+inputs:
+  args:
+    description: "Arguments passed to the knowform CLI (e.g. `plan`, `plan --format summary`)."
+    required: false
+    default: "plan"
+  python-version:
+    description: "Python version to run knowform under."
+    required: false
+    default: "3.12"
+
+runs:
+  using: "composite"
+  steps:
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ inputs.python-version }}
+
+    - name: Install knowform
+      shell: bash
+      run: pip install "knowform @ git+https://github.com/andylan/knowform@${{ github.action_ref || 'main' }}"
+
+    - name: Run knowform
+      shell: bash
+      run: knowform ${{ inputs.args }}

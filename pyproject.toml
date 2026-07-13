@@ -1,0 +1,39 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "knowform"
+version = "0.1.0"
+description = "Terraform for docs — declarative doc↔code drift reconciliation (plan / sync / apply)."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Andy Lan" }]
+keywords = ["documentation", "drift", "docs-as-code", "reconciliation", "ast"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Topic :: Documentation",
+    "Topic :: Software Development :: Documentation",
+    "Topic :: Software Development :: Quality Assurance",
+]
+dependencies = []
+
+[project.optional-dependencies]
+judge = ["anthropic"]
+
+[project.scripts]
+knowform = "knowform.__main__:main"
+
+[project.urls]
+Homepage = "https://github.com/andylan/knowform"
+Source = "https://github.com/andylan/knowform"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/knowform"]
+
+[tool.hatch.build.targets.sdist]
+include = ["src/knowform", "tests", "README.md", "LICENSE"]
