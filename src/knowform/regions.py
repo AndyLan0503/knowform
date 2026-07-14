@@ -21,15 +21,22 @@ class Region:
     """A resolved text region: file plus 1-based inclusive line span.
 
     `whole` marks a file-level degrade (fences absent / anchor unresolved).
+    `exclude` carves a 1-based inclusive line sub-span out of the region (a
+    docstring binding's code region is the symbol MINUS its docstring lines).
     """
     path: Path
     start: int
     end: int
     whole: bool = False
+    exclude: tuple[int, int] | None = None
 
     def text(self, root: Path) -> str:
         lines = _read_lines(root / self.path)
-        return "\n".join(lines[self.start - 1:self.end])
+        numbers = range(self.start, self.end + 1)
+        if self.exclude is not None:
+            lo, hi = self.exclude
+            numbers = [n for n in numbers if not (lo <= n <= hi)]
+        return "\n".join(lines[n - 1] for n in numbers)
 
 
 def _read_lines(path: Path) -> list[str]:
@@ -153,11 +160,15 @@ def _parse(path: Path) -> ast.Module | None:
 
 
 def _find_symbol(path: Path, anchor: str):
-    """Match `def name`, `class name`, or a bare `name` to a top-level (or
-    nested) function/class definition."""
     tree = _parse(path)
     if tree is None:
         return None
+    return _find_symbol_in_tree(tree, anchor)
+
+
+def _find_symbol_in_tree(tree: ast.Module, anchor: str):
+    """Match `def name`, `class name`, or a bare `name` to a top-level (or
+    nested) function/class definition."""
     kind, _, name = anchor.strip().partition(" ")
     if not name:
         name = kind
@@ -174,3 +185,80 @@ def _find_symbol(path: Path, anchor: str):
             continue
         return node
     return None
+
+
+def _docstring_span(node: ast.AST | None) -> tuple[int, int] | None:
+    """1-based inclusive line span of `node`'s docstring, or None when the
+    def/class/module has no docstring first statement."""
+    if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef,
+                             ast.ClassDef, ast.Module)):
+        return None
+    body = getattr(node, "body", [])
+    if not body:
+        return None
+    first = body[0]
+    if (isinstance(first, ast.Expr) and isinstance(first.value, ast.Constant)
+            and isinstance(first.value.value, str)):
+        return (first.lineno, getattr(first, "end_lineno", first.lineno))
+    return None
+
+
+def resolve_docstring_region(root: Path, file_path: Path,
+                             symbol: str) -> Region:
+    """The docstring's own line span (the doc side of a docstring binding).
+    Degrades to whole-file for non-Python, a missing symbol, or a symbol with
+    no docstring - the caller then treats it as unanchorable."""
+    full = root / file_path
+    try:
+        line_count = len(_read_lines(full)) or 1
+    except (OSError, UnicodeDecodeError):
+        return Region(file_path, 1, 1, whole=True)
+    whole = Region(file_path, 1, line_count, whole=True)
+    if full.suffix != ".py":
+        return whole
+    span = _docstring_span(_find_symbol(full, symbol))
+    if span is None:
+        return whole
+    return Region(file_path, span[0], span[1])
+
+
+def resolve_docstring_code_region(root: Path, file_path: Path,
+                                  symbol: str) -> Region:
+    """The bound symbol's span MINUS its docstring lines, so the doc tracks
+    behavior rather than the prose describing it. With no docstring to carve
+    out, this is the plain symbol region."""
+    region = resolve_code_region(root, file_path, symbol)
+    if region.whole:
+        return region
+    doc = resolve_docstring_region(root, file_path, symbol)
+    if doc.whole:
+        return region
+    return Region(region.path, region.start, region.end,
+                  exclude=(doc.start, doc.end))
+
+
+def replace_docstring(text: str, symbol: str, new_prose: str) -> str | None:
+    """Replace `symbol`'s docstring with `new_prose`, preserving its
+    indentation and leaving the rest of the file intact. Returns None when the
+    symbol has no docstring to target - apply must never write blind."""
+    try:
+        tree = ast.parse(text)
+    except (SyntaxError, ValueError):
+        return None
+    span = _docstring_span(_find_symbol_in_tree(tree, symbol))
+    if span is None:
+        return None
+    lines = text.split("\n")
+    start, end = span
+    opener = lines[start - 1]
+    indent = opener[:len(opener) - len(opener.lstrip())]
+    lines[start - 1:end] = _format_docstring(new_prose, indent)
+    return "\n".join(lines)
+
+
+def _format_docstring(prose: str, indent: str) -> list[str]:
+    body = [ln.rstrip() for ln in prose.strip().split("\n")]
+    if len(body) == 1:
+        return [f'{indent}"""{body[0]}"""']
+    inner = [f"{indent}{ln}".rstrip() for ln in body]
+    return [f'{indent}"""', *inner, f'{indent}"""']

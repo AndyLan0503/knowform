@@ -23,8 +23,11 @@ from .docstate import DocState, Record, classify
 from .frontmatter import Direction, replace_fenced_region
 from .gitdiff import head_sha
 from .judge import Generator, VerdictKind, build_frontier
+from .manifest import DocstringBinding
 from .plan import resolve_bindings
-from .regions import hash_span, resolve_doc_region
+from .regions import (
+    hash_span, replace_docstring, resolve_doc_region, resolve_docstring_region,
+)
 
 
 @dataclass
@@ -93,14 +96,18 @@ def apply(root: Path, generator: Generator | None = None) -> ApplyResult:
         # structural is CODE_DRIFT + code-is-truth: the safe regen target.
         if r.doc_region.whole:
             result.surfaced.append(Refusal(
-                r.entry_id, "code-drift but no anchor fences to target safely"))
+                r.entry_id, "code-drift but no doc region to target safely"))
             continue
         if generator is None:
             result.surfaced.append(Refusal(
                 r.entry_id, "code-drift: no generator configured"))
             continue
 
-        ok, why = _regenerate(root, r, generator, updated, blessed_at)
+        if isinstance(r.binding, DocstringBinding):
+            ok, why = _regenerate_docstring(
+                root, r, generator, updated, blessed_at)
+        else:
+            ok, why = _regenerate(root, r, generator, updated, blessed_at)
         if ok:
             result.applied.append(r.entry_id)
             wrote = True
@@ -134,6 +141,34 @@ def _regenerate(root: Path, r, generator: Generator,
         return False, "anchor fences vanished before write; skipped"
     doc_file.write_text(new_text, encoding="utf-8")
     new_region = resolve_doc_region(root, r.doc_region.path, r.binding)
+    updated[r.entry_id] = Record(
+        direction=r.direction.value, governs=r.governs,
+        doc_hash=hash_span(new_region.text(root)), code_hash=r.code_hash,
+        last_verdict=VerdictKind.IN_SYNC.value, blessed_at=blessed_at)
+    return True, ""
+
+
+def _regenerate_docstring(root: Path, r, generator: Generator,
+                          updated: dict[str, Record],
+                          blessed_at: str) -> tuple[bool, str]:
+    """Rewrite a docstring in place from its bound behavior and re-bless the
+    record. The code region excludes the docstring, so its hash is unchanged by
+    the rewrite; only the doc hash moves."""
+    py_file = root / r.doc_region.path
+    if py_file.is_symlink() or not _within(root, py_file):
+        return False, "code path escapes the repository; refused"
+    item = build_frontier(root, r.key, r.direction, r.binding,
+                          r.doc_region, r.code_region)
+    prose = generator(item)
+    if '"""' in prose:
+        return False, "generator emitted a triple quote; refused"
+    new_text = replace_docstring(
+        py_file.read_text(encoding="utf-8"), r.binding.symbol, prose)
+    if new_text is None:
+        return False, "docstring vanished before write; skipped"
+    py_file.write_text(new_text, encoding="utf-8")
+    new_region = resolve_docstring_region(root, r.doc_region.path,
+                                          r.binding.symbol)
     updated[r.entry_id] = Record(
         direction=r.direction.value, governs=r.governs,
         doc_hash=hash_span(new_region.text(root)), code_hash=r.code_hash,

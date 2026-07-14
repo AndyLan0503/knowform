@@ -17,8 +17,10 @@ from .frontmatter import Direction, parse_frontmatter
 from .gitdiff import ChangedSet, changed_set
 from .graph import DocNode, build_graph, frontier
 from .judge import Judge, Verdict, VerdictKind, build_frontier
+from .manifest import MANIFEST, load as load_manifest
 from .regions import (
     Region, hash_span, resolve_code_region, resolve_doc_region,
+    resolve_docstring_code_region, resolve_docstring_region,
     resolve_governed_files,
 )
 
@@ -187,7 +189,47 @@ def resolve_bindings(root: Path) -> Resolution:
                     key=key, region=code_region, node_id=entry_id))
                 if (root / gov_file).suffix == ".py":
                     out.py_files.add(gov_file)
+    _resolve_manifest(root, out)
     return out
+
+
+def _resolve_manifest(root: Path, out: Resolution) -> None:
+    """Fold `knowform.bindings.json` docstring bindings into the same resolved
+    shape as frontmatter bindings: doc region = the docstring span, code region
+    = the symbol MINUS its docstring (behavior)."""
+    manifest = load_manifest(root)
+    if manifest is None:
+        return
+    if manifest.error:
+        out.errors.append(PlanEntry(
+            entry_id=f"{MANIFEST}#<error>", key=f"{MANIFEST}#<error>",
+            direction=None, governs="", doc_hash=None, code_hash=None,
+            verdict="error", on_frontier=False, error=manifest.error))
+        return
+    for db in manifest.docstrings:
+        for gov in resolve_governed_files(root, db.governs):
+            if gov.error is not None:
+                key = f"{db.governs}#docstring:{db.symbol}"
+                out.errors.append(PlanEntry(
+                    entry_id=key, key=key, direction=db.direction.value,
+                    governs=db.governs, doc_hash=None, code_hash=None,
+                    verdict="error", on_frontier=False, error=gov.error))
+                continue
+            gov_file = gov.path
+            doc_region = resolve_docstring_region(root, gov_file, db.symbol)
+            code_region = resolve_docstring_code_region(
+                root, gov_file, db.symbol)
+            key = f"{gov_file}#docstring:{db.symbol}"
+            out.resolved.append(_Resolved(
+                entry_id=key, key=key, direction=db.direction,
+                governs=str(gov_file), doc_region=doc_region,
+                code_region=code_region, binding=db,
+                doc_hash=_safe_hash(root, doc_region),
+                code_hash=_safe_hash(root, code_region)))
+            out.doc_nodes.append(DocNode(
+                key=key, region=code_region, node_id=key))
+            if (root / gov_file).suffix == ".py":
+                out.py_files.add(gov_file)
 
 
 def plan(root: Path, base: str = "HEAD", judge: Judge | None = None,
