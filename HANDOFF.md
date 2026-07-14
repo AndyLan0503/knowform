@@ -1,9 +1,68 @@
-# Handoff: `init` deterministic binding discovery (init Milestones 2 + 2.1)
+# Handoff: `init` materializer + LLM tier (init Milestones 3 + 4)
 
 Branch: `freebird/init-discovery` (branched off `freebird/docstring-regions`,
-which carries M1; this branch contains M1 + M2 + M2.1).
+which carries M1; this branch contains M1 + M2 + M2.1 + **M3 + M4**).
 
-## M2.1: precision tightening (latest work)
+## M3 + M4: latest work
+
+Completes the `init` design (`memory/knowform-init-design.md`): after M2
+PROPOSES bindings (read-only `knowform.init.json`), M3 MATERIALIZES an accepted
+proposal and M4 adds the opt-in LLM tier. The propose -> review -> materialize
+gate is preserved: `--write` reads the (human-editable) artifact and never
+re-discovers.
+
+### M3: `init --write` materializer
+
+`src/knowform/materialize.py` (new): `materialize(root, proposal) ->
+MaterializeResult`. Two sinks mirroring the two discovery sources:
+
+- **markdown candidates** -> the doc gains `knowform:` frontmatter plus anchor
+  fences (`<!-- knowform:ANCHOR:start/end -->`) wrapping each governed
+  paragraph - the exact shape `plan`/`sync`/`apply` already read. Fences are
+  inserted BOTTOM-UP so earlier line spans stay valid; frontmatter is injected
+  last. A doc already carrying `knowform:` frontmatter is skipped (idempotent);
+  a doc with non-knowform frontmatter (e.g. Jekyll `title:`) gets the
+  `knowform:` block merged in, keeping its existing keys. Duplicate anchors
+  within a doc (two paragraphs naming the same symbol) get unique suffixes.
+- **docstring candidates** -> `knowform.bindings.json` gains a `{governs,
+  symbol, direction}` entry, deduped against what is already declared.
+
+`init.py` gained `read_proposal(root) -> Proposal | None` (round-trips the
+artifact; unknown keys ignored so a hand-reviewed file survives). CLI:
+`init --write` materializes the reviewed proposal, or exits nonzero if none
+exists ("run `knowform init` first"). Writes are contained to the repo
+(symlink / escape-root guards, matching `apply`'s defense-in-depth).
+
+**The load-bearing test** (`tests/test_materialize.py`,
+`MaterializeRoundtripTest`): `init` -> `write_proposal` -> `materialize` ->
+`sync` -> `plan` reports every binding `in-sync` with zero errors. This proves
+the materializer emits a corpus the existing pipeline consumes end to end.
+
+### M4: LLM Tier-2 via `--anthropic`
+
+Same seam as the existing judge/generator - an OPTIONAL injected `Matcher`
+(`src/knowform/judge.py`: `Matcher` Protocol, `MatchInput`/`MatchResult`,
+`AnthropicMatcher` lazy-importing `anthropic`). `init(root, matcher=None)`:
+with no matcher, zero tokens (unchanged). With one, the LLM disambiguates the
+AMBIGUOUS (multi-symbol) `unmatched` references the deterministic tier
+explicitly punts on: given the doc region text plus the enumerated candidate
+symbols, it picks which ONE the prose describes. A confident, validated pick
+becomes a `source_tier=2` markdown candidate; everything else stays unmatched.
+
+Precision holds under the LLM: only one candidate per doc region (guarded), a
+symbol outside the presented set is rejected as a hallucination, and a
+`doc-is-truth` direction hint is clamped to `manual` (a spec is a human
+declaration, never auto-assigned). CLI: `init --anthropic` wires
+`AnthropicMatcher`.
+
+Strict TDD throughout: `tests/test_materialize.py` (9 tests) and
+`tests/test_init_llm.py` (8 tests) were written and confirmed red before the
+code existed. Both use larger-scoped fixtures (temp repos, stub Matcher, real
+`sync`/`plan` roundtrip) over narrow unit mocks.
+
+---
+
+## M2.1: precision tightening
 
 Dogfooding `init` on knowform's own `src/` tree surfaced three precision bugs
 the fixture unit tests missed. All three are now fixed in
@@ -126,28 +185,66 @@ fences, or the manifest. The only artifact it writes is the reviewable proposal
 - Module-level docstrings are out of scope (a symbol anchor is required, same
   as M1).
 
-## Residual / left undone (by design for M2)
+## Verification (M3 + M4)
 
-- No `init --write` materializer (Milestone 3) and no LLM/`--anthropic` fuzzy
-  tier (Milestone 4). `init` here is deterministic and read-only.
-- Markdown resolution is by bare symbol name; a dotted reference
-  (`module.func`) resolves on its trailing identifier (`func`). Cross-module
-  disambiguation is left to the human via the `unmatched` list / review.
+- **148 tests pass** (`python -m unittest`), green in the final state (was 131
+  before this run: +9 materialize, +8 LLM tier).
+- Strict TDD: both new test files were confirmed red (`ModuleNotFoundError:
+  knowform.materialize`; missing `MatchInput` in judge) before implementation.
+- Manual end-to-end CLI dogfood on a throwaway repo: `init` -> `init --write`
+  -> `sync` -> `plan --format summary` reported "0 binding(s) need attention
+  (2 total)". The materialized `guide.md` (frontmatter + fences) and
+  `knowform.bindings.json` were inspected and correct.
+- `AnthropicMatcher`/`AnthropicGenerator`/`AnthropicJudge` all lazy-import
+  `anthropic`; the package imports and the whole suite runs with no third-party
+  deps and never touches the network.
+
+## Assumptions made (M3 + M4)
+
+- **`--write` reads the artifact, never re-discovers.** It requires an existing
+  `knowform.init.json` (the review gate). This is the defensible reading of
+  "human accepts, then materialize" - the human may edit/prune the JSON first.
+- **One direction per managed doc.** All markdown candidates in a doc share
+  `code-is-truth` (init never emits another direction for markdown), so the
+  doc-level `direction:` is taken from the first candidate.
+- **doc_anchor = bare symbol name** (`add`, `Widget`), suffixed (`add-2`) only
+  on collision within a doc. Chosen for readable, stable anchors.
+- **M4 scope = disambiguate the ambiguous `unmatched` set.** The LLM resolves
+  only references the deterministic tier flagged as multi-symbol (>=2
+  candidates), choosing among the enumerated symbols. Broad "prose that names
+  no symbol at all" fuzzy scanning was deliberately NOT built - it is unbounded
+  and expensive; the bounded disambiguation is the high-value, testable slice
+  of "LLM for fuzzy matches / direction hints".
+
+## Residual / left undone
+
+- M4 does not attempt fuzzy binding of prose that contains no resolvable
+  backtick/call token, nor does it revisit call-shaped-to-zero unmatched
+  entries (no symbol to bind). Both remain in `unmatched` for human review.
+- Markdown resolution is still by bare symbol name; a dotted reference
+  (`module.func`) resolves on its trailing identifier. Cross-module
+  disambiguation without `--anthropic` is left to the human.
 - The pre-existing uncommitted changes to `.gitignore` and `pyproject.toml`
-  (present before both this run and the M1 run) are **left untouched,
+  (present before this run and every prior run) are **left untouched,
   unstaged**; they are unrelated to this task.
 
 ## Commands to verify and push
 
 ```sh
 git checkout freebird/init-discovery
-uv run --with pytest pytest -q          # expect: 131 passed
+source .venv/bin/activate
+python -m unittest discover -s tests -q      # expect: 148 passed
 
-# try it:
-python -m knowform init --root <some-repo>   # writes knowform.init.json only
+# try it end to end on a throwaway repo:
+python -m knowform init --root <repo>        # writes knowform.init.json (review it)
+python -m knowform init --write --root <repo># materializes frontmatter+fences+manifest
+python -m knowform sync --root <repo>        # bless
+python -m knowform plan --root <repo> --format summary
+# opt-in LLM disambiguation (network; needs ANTHROPIC_API_KEY + `anthropic`):
+python -m knowform init --anthropic --root <repo>
 
 # if satisfied (this branch includes M1's commits):
 git checkout main
 git merge --ff-only freebird/init-discovery
-git push origin main                    # (not done by this run)
+git push origin main                         # (not done by this run)
 ```
