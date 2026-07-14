@@ -9,10 +9,12 @@ third-party deps and tests never touch the network.
 from __future__ import annotations
 
 import ast
+import os
+import shutil
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Protocol
+from typing import Callable, Protocol
 
 from .frontmatter import Binding, Direction
 from .regions import Region
@@ -258,6 +260,135 @@ def _parse_match(message: object) -> MatchResult:
         confidence=data.get("confidence"),
         rationale=data.get("rationale", ""),
     )
+
+
+class ClaudeCliUnavailable(RuntimeError):
+    """Raised when the local `claude` binary cannot be located."""
+
+
+def _candidate_binary_paths() -> list[Path]:
+    """Where Claude Code installs `claude` when it is not on a bare PATH
+    (e.g. invoked from a subprocess or a GUI-launched shell)."""
+    home = Path.home()
+    return [
+        home / ".claude" / "local" / "claude",
+        home / ".local" / "bin" / "claude",
+        Path("/usr/local/bin/claude"),
+        Path("/opt/homebrew/bin/claude"),
+    ]
+
+
+def _find_claude_binary() -> str | None:
+    found = shutil.which("claude")
+    if found:
+        return found
+    for c in _candidate_binary_paths():
+        if c.is_file() and os.access(c, os.X_OK):
+            return str(c)
+    return None
+
+
+def _default_claude_runner(cmd: list[str], timeout: float) -> str:
+    import subprocess  # lazy: never reached under test
+
+    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    if proc.returncode != 0:
+        raise ClaudeCliUnavailable(
+            f"`claude` exited {proc.returncode}: {proc.stderr.strip()}")
+    return proc.stdout
+
+
+_CLI_MATCH_INSTRUCTION = (
+    "\n\nReply with ONLY a JSON object (no prose, no code fence) with keys: "
+    '"matched" (boolean), "code_anchor" (string), "governs" (string), '
+    '"direction" ("code-is-truth" or "manual"), "confidence" (0..1 number), '
+    '"rationale" (string). Set "matched" false when no candidate clearly fits.'
+)
+
+
+@dataclass
+class ClaudeCliMatcher:
+    """Tier-2 matcher that rides the local Claude Code CLI, so it authenticates
+    with whatever the user is logged in with (a subscription included) - no API
+    key. Shells out to `claude -p ... --output-format json`. The `runner` seam
+    keeps tests off the network; `binary` is auto-detected when omitted."""
+    binary: str | None = None
+    model: str | None = None
+    timeout: float = 120.0
+    runner: Callable[[list[str], float], str] | None = None
+
+    def __post_init__(self) -> None:
+        if self.binary is None:
+            self.binary = _find_claude_binary()
+        if self.binary is None:
+            raise ClaudeCliUnavailable(
+                "the `claude` CLI was not found; install Claude Code and log "
+                "in, or use --anthropic with ANTHROPIC_API_KEY")
+        if self.runner is None:
+            self.runner = _default_claude_runner
+
+    def __call__(self, item: MatchInput) -> MatchResult:
+        options = "\n".join(f"- {anchor} in {governs}"
+                            for anchor, governs in item.candidates)
+        prompt = _MATCH_PROMPT.format(
+            identifier=item.identifier,
+            doc_path=item.doc_path,
+            region=item.region_text,
+            candidates=options,
+        ) + _CLI_MATCH_INSTRUCTION
+        cmd = [self.binary, "-p", prompt, "--output-format", "json"]
+        if self.model:
+            cmd += ["--model", self.model]
+        stdout = self.runner(cmd, self.timeout)
+        return _parse_cli_match(stdout)
+
+
+def _parse_cli_match(stdout: str) -> MatchResult:
+    import json
+
+    text = stdout
+    try:
+        env = json.loads(stdout)
+    except json.JSONDecodeError:
+        env = None
+    if isinstance(env, dict) and "matched" not in env and "result" in env:
+        r = env["result"]
+        text = r if isinstance(r, str) else json.dumps(r)
+    data = _extract_json_object(text)
+    return MatchResult(
+        matched=bool(data.get("matched")),
+        code_anchor=data.get("code_anchor"),
+        governs=data.get("governs"),
+        direction=data.get("direction", "code-is-truth"),
+        confidence=data.get("confidence"),
+        rationale=data.get("rationale", ""),
+    )
+
+
+def _extract_json_object(text: str) -> dict:
+    """The first balanced `{...}` in `text`, tolerating code fences and prose
+    the model may wrap around it."""
+    import json
+
+    text = text.strip()
+    try:
+        obj = json.loads(text)
+        if isinstance(obj, dict):
+            return obj
+    except json.JSONDecodeError:
+        pass
+    start = text.find("{")
+    if start == -1:
+        raise ValueError(f"no JSON object in claude output: {text[:200]!r}")
+    depth = 0
+    for i in range(start, len(text)):
+        if text[i] == "{":
+            depth += 1
+        elif text[i] == "}":
+            depth -= 1
+            if depth == 0:
+                return json.loads(text[start:i + 1])
+    raise ValueError(f"unbalanced JSON in claude output: {text[:200]!r}")
 
 
 class Generator(Protocol):

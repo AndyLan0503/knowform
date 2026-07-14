@@ -80,7 +80,14 @@ def _cmd_init(args) -> int:
               + (f", {len(result.skipped)} skipped" if result.skipped else ""))
         return 0
     matcher = None
-    if args.anthropic:
+    if args.llm:
+        from .judge import ClaudeCliMatcher, ClaudeCliUnavailable
+        try:
+            matcher = ClaudeCliMatcher()
+        except ClaudeCliUnavailable as e:
+            print(str(e), file=sys.stderr)
+            return 1
+    elif args.anthropic:
         from .judge import AnthropicMatcher
         matcher = AnthropicMatcher()
     proposal = init(root, matcher=matcher)
@@ -119,9 +126,13 @@ def main(argv: list[str] | None = None) -> int:
     i.add_argument("--write", action="store_true",
                    help="materialize the reviewed knowform.init.json "
                         "(frontmatter+fences and manifest entries)")
-    i.add_argument("--anthropic", action="store_true",
-                   help="wire the live Anthropic matcher for Tier-2 "
-                        "disambiguation (opt-in; network)")
+    llm = i.add_mutually_exclusive_group()
+    llm.add_argument("--llm", action="store_true",
+                     help="Tier-2 fuzzy disambiguation via your local Claude "
+                          "Code login (auto-detects `claude`; no API key)")
+    llm.add_argument("--anthropic", action="store_true",
+                     help="Tier-2 via the Anthropic API instead "
+                          "(needs ANTHROPIC_API_KEY); not the default")
     i.set_defaults(func=_cmd_init)
 
     args = parser.parse_args(argv)
