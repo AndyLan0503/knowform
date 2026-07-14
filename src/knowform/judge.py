@@ -158,6 +158,108 @@ def _parse_verdict(message: object) -> Verdict:
     )
 
 
+@dataclass
+class MatchInput:
+    """The `init` Tier-2 neighborhood: one ambiguous doc reference plus the
+    enumerated code symbols it could name - never whole files."""
+    doc_path: str
+    region_text: str
+    identifier: str
+    candidates: list[tuple[str, str]]   # (code_anchor, governs) options
+
+
+@dataclass
+class MatchResult:
+    matched: bool
+    code_anchor: str | None = None
+    governs: str | None = None
+    direction: str = "code-is-truth"
+    confidence: float | None = None
+    rationale: str = ""
+
+
+class Matcher(Protocol):
+    """The `init` fuzzy-match seam. Given a reference the deterministic tiers
+    could not bind and its candidate symbols, pick which one (if any) the prose
+    describes. With none injected, `init` spends zero tokens."""
+    def __call__(self, item: MatchInput) -> MatchResult: ...
+
+
+_MATCH_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "matched": {"type": "boolean"},
+        "code_anchor": {"type": "string"},
+        "governs": {"type": "string"},
+        "direction": {"type": "string",
+                      "enum": [d.value for d in Direction]},
+        "confidence": {"type": "number"},
+        "rationale": {"type": "string"},
+    },
+    "required": ["matched"],
+}
+
+_MATCH_PROMPT = (
+    "A documentation passage references `{identifier}`, which is ambiguous: "
+    "several code symbols share that name. Decide which ONE symbol the passage "
+    "describes, or that none clearly does. Choose only from the listed "
+    "candidates - never invent a symbol. Prefer code-is-truth; use manual when "
+    "unsure of direction; never doc-is-truth.\n\n"
+    "DOC ({doc_path}):\n{region}\n\n"
+    "CANDIDATE SYMBOLS:\n{candidates}"
+)
+
+
+@dataclass
+class AnthropicMatcher:
+    """Concrete Tier-2 matcher. Lazy-imports `anthropic` so the package imports
+    without the dep and tests never reach it."""
+    model: str = "claude-opus-4-8"
+
+    def __call__(self, item: MatchInput) -> MatchResult:
+        import anthropic  # lazy: never imported at module top level
+
+        client = anthropic.Anthropic()
+        options = "\n".join(f"- {anchor} in {governs}"
+                            for anchor, governs in item.candidates)
+        message = client.messages.create(
+            model=self.model,
+            max_tokens=1024,
+            thinking={"type": "adaptive"},
+            output_config={"format": {
+                "type": "json_schema",
+                "schema": _MATCH_SCHEMA,
+            }},
+            messages=[{
+                "role": "user",
+                "content": _MATCH_PROMPT.format(
+                    identifier=item.identifier,
+                    doc_path=item.doc_path,
+                    region=item.region_text,
+                    candidates=options,
+                ),
+            }],
+        )
+        return _parse_match(message)
+
+
+def _parse_match(message: object) -> MatchResult:
+    import json
+
+    text = ""
+    for block in getattr(message, "content", []):
+        text += getattr(block, "text", "")
+    data = json.loads(text)
+    return MatchResult(
+        matched=bool(data.get("matched")),
+        code_anchor=data.get("code_anchor"),
+        governs=data.get("governs"),
+        direction=data.get("direction", "code-is-truth"),
+        confidence=data.get("confidence"),
+        rationale=data.get("rationale", ""),
+    )
+
+
 class Generator(Protocol):
     """The safe-direction prose seam. Returns fresh
     descriptive prose for a `code-is-truth` doc region, from the bound code."""

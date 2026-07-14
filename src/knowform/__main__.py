@@ -79,7 +79,11 @@ def _cmd_init(args) -> int:
               f"{len(result.manifest_entries)} manifest entry(ies)"
               + (f", {len(result.skipped)} skipped" if result.skipped else ""))
         return 0
-    proposal = init(root)
+    matcher = None
+    if args.anthropic:
+        from .judge import AnthropicMatcher
+        matcher = AnthropicMatcher()
+    proposal = init(root, matcher=matcher)
     out = write_proposal(root, proposal)
     print(f"proposed {len(proposal.candidates)} binding(s), "
           f"{len(proposal.unmatched)} unmatched -> {out}")
@@ -115,6 +119,9 @@ def main(argv: list[str] | None = None) -> int:
     i.add_argument("--write", action="store_true",
                    help="materialize the reviewed knowform.init.json "
                         "(frontmatter+fences and manifest entries)")
+    i.add_argument("--anthropic", action="store_true",
+                   help="wire the live Anthropic matcher for Tier-2 "
+                        "disambiguation (opt-in; network)")
     i.set_defaults(func=_cmd_init)
 
     args = parser.parse_args(argv)

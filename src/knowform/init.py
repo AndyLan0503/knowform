@@ -22,6 +22,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .frontmatter import Direction, parse_frontmatter
+from .judge import Matcher, MatchInput, MatchResult
 from .manifest import load as load_manifest
 from .plan import _managed_docs, _pruned_walk, load_ignore
 from .regions import (
@@ -99,9 +100,13 @@ class _Symbol:
     anchor: str                      # "def name" | "class name"
 
 
-def init(root: Path) -> Proposal:
+def init(root: Path, matcher: "Matcher | None" = None) -> Proposal:
     """Discover candidate bindings. Read-only: resolves regions and hashes
-    nothing to disk (the caller `write_proposal`s the artifact separately)."""
+    nothing to disk (the caller `write_proposal`s the artifact separately).
+
+    Deterministic by default (Tiers 0-1). An injected `matcher` adds Tier 2:
+    the LLM disambiguates references the deterministic pass left as ambiguous
+    `unmatched`. With no matcher, zero tokens are spent."""
     root = Path(root).resolve()
     ignore = load_ignore(root)
     py_files = _pruned_walk(root, ".py", ignore)
@@ -116,8 +121,12 @@ def init(root: Path) -> Proposal:
     unmatched += md_u
 
     proposal = Proposal()
-    proposal.candidates = sorted(candidates, key=_candidate_key)
-    proposal.unmatched = sorted(unmatched, key=_unmatched_key)
+    proposal.candidates = candidates
+    proposal.unmatched = unmatched
+    if matcher is not None:
+        _llm_resolve(root, proposal, table, matcher)
+    proposal.candidates = sorted(proposal.candidates, key=_candidate_key)
+    proposal.unmatched = sorted(proposal.unmatched, key=_unmatched_key)
     return proposal
 
 
@@ -322,6 +331,64 @@ def _paragraph_for(line_no: int, paras: list[tuple[int, int]]
         if start <= line_no <= end:
             return (start, end)
     return (line_no, line_no)
+
+
+# --- Tier 2: LLM disambiguation ----------------------------------------------
+
+def _llm_resolve(root: Path, proposal: Proposal,
+                 table: dict[str, list[_Symbol]], matcher: Matcher) -> None:
+    """Ask the matcher to bind the ambiguous (multi-symbol) `unmatched`
+    references. A confident, non-hallucinated pick becomes a Tier-2 candidate;
+    everything else stays unmatched. Precision holds: only ONE candidate per
+    doc region, never doc-is-truth, never a symbol outside the presented set."""
+    taken = {(c.doc_path, c.doc_region) for c in proposal.candidates}
+    kept: list[Unmatched] = []
+    for u in proposal.unmatched:
+        options = table.get(u.identifier, [])
+        if (u.match_count <= 1 or len(options) < 2
+                or (u.doc_path, u.doc_region) in taken):
+            kept.append(u)  # nothing to disambiguate / region already bound
+            continue
+        result = matcher(MatchInput(
+            doc_path=u.doc_path,
+            region_text=_region_text(root, u.doc_path, u.doc_region),
+            identifier=u.identifier,
+            candidates=[(s.anchor, s.file) for s in options]))
+        chosen = _accept_match(result, options)
+        if chosen is None:
+            kept.append(u)
+            continue
+        sym, direction = chosen
+        taken.add((u.doc_path, u.doc_region))
+        proposal.candidates.append(Candidate(
+            kind="markdown", governs=sym.file, doc_path=u.doc_path,
+            doc_region=u.doc_region, direction=direction, confidence="medium",
+            rationale=result.rationale or
+            f"LLM disambiguated `{u.identifier}` -> {sym.anchor}",
+            source_tier=2, code_anchor=sym.anchor))
+    proposal.unmatched = kept
+
+
+def _accept_match(result: MatchResult, options: list[_Symbol]
+                  ) -> tuple[_Symbol, str] | None:
+    """Validate an LLM match against the presented options. Returns the chosen
+    symbol and a clamped direction, or None to reject (unmatched, no match, or
+    a hallucinated symbol)."""
+    if not result.matched:
+        return None
+    for sym in options:
+        if sym.anchor == result.code_anchor and sym.file == result.governs:
+            # Never auto-assign doc-is-truth: a spec is a human declaration.
+            direction = (Direction.MANUAL.value
+                         if result.direction != Direction.CODE_IS_TRUTH.value
+                         else Direction.CODE_IS_TRUTH.value)
+            return sym, direction
+    return None
+
+
+def _region_text(root: Path, doc_path: str, span: tuple[int, int]) -> str:
+    lines = (root / doc_path).read_text(encoding="utf-8").split("\n")
+    return "\n".join(lines[span[0] - 1:span[1]])
 
 
 # --- shared ------------------------------------------------------------------
