@@ -1,7 +1,47 @@
-# Handoff: `init` deterministic binding discovery (init Milestone 2)
+# Handoff: `init` deterministic binding discovery (init Milestones 2 + 2.1)
 
 Branch: `freebird/init-discovery` (branched off `freebird/docstring-regions`,
-which carries M1; this branch contains M1 + M2).
+which carries M1; this branch contains M1 + M2 + M2.1).
+
+## M2.1: precision tightening (latest work)
+
+Dogfooding `init` on knowform's own `src/` tree surfaced three precision bugs
+the fixture unit tests missed. All three are now fixed in
+`src/knowform/init.py`, surgically (no rebuild):
+
+1. **Prose parentheticals falsely read as calls.** The call regex allowed
+   whitespace before `(`, so prose like "the design (no-LLM) step" matched as
+   a call to design. Fix: the call regex is now tight `name(` (no space), and plain
+   running prose contributes NO references at all - only inline-code backticks
+   and fenced code blocks are harvested. Net: "the design (no-LLM)"
+   contributes nothing; `add(a, b)` in backticks or a real fence still
+   resolves.
+2. **Fenced/dense-prose cartesian explosion.** One doc region (e.g. a code
+   fence or a multi-symbol list item) emitted one candidate per symbol
+   mentioned - HANDOFF.md (15-39) alone produced 8. Fix: a doc region now maps
+   to AT MOST ONE candidate. References are grouped by enclosing region; a
+   region naming exactly one symbol binds it, a multi-symbol region binds
+   nothing (rather than exploding). Deterministic and documented in-code.
+3. **Private/dunder symbols proposed.** `_bound`, `_regenerate`, `__init__`
+   etc. were proposed as docstring/markdown candidates. Fix: leading-underscore
+   names are dropped - excluded from docstring anchors and from harvested
+   markdown references.
+
+Effect on the self-scan: unmatched fell from 34 (flooded with prose words like
+`design`, `discovery`, `manifest`) to 5 genuine code tokens; zero regions map
+to >1 candidate; zero underscore candidates.
+
+Acceptance is enforced by a `InitDogfoodTest` that runs `init` on the real repo
+root and asserts the three invariants (no prose word in unmatched, no region
+with >1 candidate, no leading-underscore candidate), plus focused
+`InitPrecisionTest` unit cases. Strict TDD: the 8 new tests were confirmed red
+before the fix. Full suite: **131 passed**. The `init` API, artifact schema,
+and CLI are unchanged; the precision-over-recall intent is preserved (tighter,
+not weaker).
+
+---
+
+## M2 (unchanged, for context)
 
 ## What changed and why
 
@@ -101,7 +141,7 @@ fences, or the manifest. The only artifact it writes is the reviewable proposal
 
 ```sh
 git checkout freebird/init-discovery
-uv run --with pytest pytest -q          # expect: 123 passed
+uv run --with pytest pytest -q          # expect: 131 passed
 
 # try it:
 python -m knowform init --root <some-repo>   # writes knowform.init.json only
