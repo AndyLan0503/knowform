@@ -15,7 +15,8 @@ import sys
 from pathlib import Path
 
 from .apply import apply
-from .init import init, write_proposal
+from .init import INIT_PROPOSAL, init, read_proposal, write_proposal
+from .materialize import materialize
 from .plan import plan
 from .sync import sync
 
@@ -67,6 +68,17 @@ def _cmd_apply(args) -> int:
 
 def _cmd_init(args) -> int:
     root = Path(args.root)
+    if args.write:
+        proposal = read_proposal(root)
+        if proposal is None:
+            print(f"no {INIT_PROPOSAL}; run `knowform init` first",
+                  file=sys.stderr)
+            return 1
+        result = materialize(root, proposal)
+        print(f"materialized {len(result.docs_written)} doc(s), "
+              f"{len(result.manifest_entries)} manifest entry(ies)"
+              + (f", {len(result.skipped)} skipped" if result.skipped else ""))
+        return 0
     proposal = init(root)
     out = write_proposal(root, proposal)
     print(f"proposed {len(proposal.candidates)} binding(s), "
@@ -100,6 +112,9 @@ def main(argv: list[str] | None = None) -> int:
         "init", help="propose doc↔code bindings (read-only; writes only "
                      "knowform.init.json)")
     i.add_argument("--root", default=".", help="repo root to scan")
+    i.add_argument("--write", action="store_true",
+                   help="materialize the reviewed knowform.init.json "
+                        "(frontmatter+fences and manifest entries)")
     i.set_defaults(func=_cmd_init)
 
     args = parser.parse_args(argv)

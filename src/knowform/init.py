@@ -128,6 +128,31 @@ def write_proposal(root: Path, proposal: Proposal) -> Path:
     return out
 
 
+def read_proposal(root: Path) -> Proposal | None:
+    """Load a (possibly human-edited) `knowform.init.json` back into a Proposal.
+    None when the artifact is absent - the materializer refuses rather than
+    guessing. Unknown/extra keys are ignored so a hand-reviewed file survives."""
+    f = Path(root) / INIT_PROPOSAL
+    if not f.exists():
+        return None
+    data = json.loads(f.read_text(encoding="utf-8"))
+    proposal = Proposal()
+    for c in data.get("candidates", []):
+        proposal.candidates.append(Candidate(
+            kind=c["kind"], governs=c["governs"], doc_path=c["doc_path"],
+            doc_region=(c["doc_region"][0], c["doc_region"][1]),
+            direction=c["direction"], confidence=c["confidence"],
+            rationale=c["rationale"], source_tier=c["source_tier"],
+            symbol=c.get("symbol"), code_anchor=c.get("code_anchor")))
+    for u in data.get("unmatched", []):
+        proposal.unmatched.append(Unmatched(
+            kind=u["kind"], doc_path=u["doc_path"],
+            doc_region=(u["doc_region"][0], u["doc_region"][1]),
+            identifier=u["identifier"], match_count=u["match_count"],
+            reason=u["reason"]))
+    return proposal
+
+
 def _candidate_key(c: Candidate) -> tuple:
     return (c.kind, c.doc_path, c.doc_region[0], c.doc_region[1], c.governs,
             c.symbol or c.code_anchor or "")
