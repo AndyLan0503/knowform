@@ -1,10 +1,13 @@
 import json
 import tempfile
 import unittest
+from collections import Counter
 from pathlib import Path
 
 from knowform.__main__ import main
 from knowform.init import INIT_PROPOSAL, init, write_proposal
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
 
 LIB = (
     '"""Module docstring."""\n'
@@ -107,7 +110,7 @@ class InitDiscoveryTest(unittest.TestCase):
                    'def process(data):\n    """Store."""\n    return data\n')
             _write(root, "queue.py",
                    'def process(job):\n    """Queue."""\n    return job\n')
-            _write(root, "ops.md", "# Ops\n\nUse process() to handle items.\n")
+            _write(root, "ops.md", "# Ops\n\nUse `process()` to handle items.\n")
             proposal = init(root)
             self.assertFalse(any(c.code_anchor == "def process"
                                  for c in proposal.candidates))
@@ -216,6 +219,95 @@ class InitDiscoveryTest(unittest.TestCase):
             # Docs/code untouched: init only writes the proposal artifact.
             self.assertEqual((root / "lib.py").read_text(), lib_before)
             self.assertEqual((root / "guide.md").read_text(), guide_before)
+
+
+class InitPrecisionTest(unittest.TestCase):
+    def test_prose_parenthetical_is_not_a_call(self):
+        # "the design (...)" in running prose must not read as design().
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _write(root, "lib.py",
+                   'def design(x):\n    """Design."""\n    return x\n')
+            _write(root, "notes.md",
+                   "# Notes\n\nThe design (no-LLM) step drives discovery "
+                   "(fast) here.\n")
+            proposal = init(root)
+            self.assertFalse(any(c.kind == "markdown"
+                                 and c.code_anchor == "def design"
+                                 for c in proposal.candidates))
+            idents = {u.identifier for u in proposal.unmatched}
+            self.assertNotIn("design", idents)
+            self.assertNotIn("discovery", idents)
+
+    def test_call_in_backticks_still_resolves(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _write(root, "lib.py", LIB)
+            _write(root, "use.md", "# Use\n\nCall `add(a, b)` to sum.\n")
+            proposal = init(root)
+            self.assertTrue(any(c.kind == "markdown"
+                                and c.code_anchor == "def add"
+                                for c in proposal.candidates))
+
+    def test_at_most_one_candidate_per_doc_region(self):
+        # A paragraph naming two symbols cannot fence to both.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _write(root, "lib.py", LIB)
+            _write(root, "dense.md",
+                   "# Dense\n\nUse `add` and `render` together here.\n")
+            proposal = init(root)
+            per_region = Counter((c.doc_path, c.doc_region)
+                                 for c in proposal.candidates)
+            self.assertTrue(all(v <= 1 for v in per_region.values()))
+
+    def test_fenced_block_does_not_explode(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _write(root, "lib.py", LIB)
+            _write(root, "ex.md",
+                   "# Ex\n\n```python\nadd(1, 2)\nWidget().render()\n```\n")
+            proposal = init(root)
+            per_region = Counter((c.doc_path, c.doc_region)
+                                 for c in proposal.candidates)
+            self.assertTrue(all(v <= 1 for v in per_region.values()))
+
+    def test_private_symbol_is_not_a_candidate(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _write(root, "lib.py",
+                   'def _internal(x):\n    """Internal."""\n    return x\n')
+            _write(root, "doc.md", "# Doc\n\nSee `_internal` for details.\n")
+            proposal = init(root)
+            for c in proposal.candidates:
+                anchor = (c.symbol or c.code_anchor or "").split(" ")[-1]
+                self.assertFalse(anchor.startswith("_"))
+
+
+class InitDogfoodTest(unittest.TestCase):
+    """Run `init` on knowform's own repo: the fixtures unit tests missed the
+    precision bugs this milestone fixes, so assert their invariants here."""
+
+    def setUp(self):
+        self.proposal = init(REPO_ROOT)
+
+    def test_no_prose_words_in_unmatched(self):
+        idents = {u.identifier for u in self.proposal.unmatched}
+        leaked = {"design", "discovery", "deterministically", "manifest",
+                  "references", "styling", "truth", "undone", "today"}
+        self.assertEqual(idents & leaked, set())
+
+    def test_each_doc_region_maps_to_at_most_one_candidate(self):
+        per_region = Counter((c.doc_path, c.doc_region)
+                             for c in self.proposal.candidates)
+        offenders = {k: v for k, v in per_region.items() if v > 1}
+        self.assertEqual(offenders, {})
+
+    def test_no_leading_underscore_candidate(self):
+        for c in self.proposal.candidates:
+            anchor = (c.symbol or c.code_anchor or "").split(" ")[-1]
+            self.assertFalse(anchor.startswith("_"),
+                             f"underscore candidate: {c}")
 
 
 if __name__ == "__main__":

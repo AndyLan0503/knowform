@@ -153,6 +153,8 @@ def _docstring_candidates(root: Path, py_files: list[Path],
                 continue
             if _docstring_span(node) is None:
                 continue
+            if node.name.startswith("_"):
+                continue  # internal helper/dunder: not load-bearing public doc
             kind = "class" if isinstance(node, ast.ClassDef) else "def"
             anchors.setdefault(f"{kind} {node.name}", []).append(node)
         for anchor, nodes in anchors.items():
@@ -176,7 +178,7 @@ def _docstring_candidates(root: Path, py_files: list[Path],
 
 _FENCE = re.compile(r"^\s*(```|~~~)")
 _INLINE = re.compile(r"`([^`]+)`")
-_CALL = re.compile(r"([A-Za-z_][A-Za-z0-9_.]*)\s*\(")
+_CALL = re.compile(r"([A-Za-z_][A-Za-z0-9_.]*)\(")  # tight: no space before (
 _IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
@@ -192,18 +194,31 @@ def _markdown_candidates(root: Path, ignore: list[str],
             continue  # already managed -> not rescanned
         lines = text.split("\n")
         paras = _paragraphs(lines)
-        seen: set[tuple[int, int, str]] = set()
+        by_region: dict[tuple[int, int], list[tuple[str, bool]]] = {}
         for line_no, name, strong in _references(lines):
-            span = _paragraph_for(line_no, paras)
-            matches = table.get(name, [])
-            if len(matches) == 1:
-                sym = matches[0]
-                if (sym.file, _bare(sym.anchor)) in bound:
-                    continue
-                dkey = (span[0], span[1], sym.anchor)
-                if dkey in seen:
-                    continue
-                seen.add(dkey)
+            by_region.setdefault(_paragraph_for(line_no, paras), []).append(
+                (name, strong))
+        for span, refs in sorted(by_region.items()):
+            resolved: dict[str, tuple[_Symbol, str]] = {}
+            flagged: list[tuple[str, int]] = []
+            seen_flag: set[str] = set()
+            for name, strong in refs:
+                matches = table.get(name, [])
+                if len(matches) == 1:
+                    sym = matches[0]
+                    if (sym.file, _bare(sym.anchor)) in bound:
+                        continue
+                    resolved.setdefault(sym.anchor, (sym, name))
+                elif (len(matches) > 1 or strong) and name not in seen_flag:
+                    # >1: genuinely ambiguous. 0 + call-shaped: looks like a
+                    # call to an unknown symbol - worth review, never bound.
+                    seen_flag.add(name)
+                    flagged.append((name, len(matches)))
+            # Invariant: a doc region maps to AT MOST ONE candidate. A region
+            # naming exactly one symbol binds it; a multi-symbol region (dense
+            # prose or a code fence) binds nothing rather than exploding.
+            if len(resolved) == 1:
+                anchor, (sym, name) = next(iter(resolved.items()))
                 candidates.append(Candidate(
                     kind="markdown", governs=sym.file, doc_path=str(doc),
                     doc_region=span, direction=Direction.CODE_IS_TRUTH.value,
@@ -211,26 +226,22 @@ def _markdown_candidates(root: Path, ignore: list[str],
                     rationale=f"`{name}` resolves to {sym.anchor} "
                               f"in {sym.file}",
                     source_tier=0, code_anchor=sym.anchor))
-            elif len(matches) > 1 or strong:
-                # >1: genuinely ambiguous. 0 + call-shaped: looks like a call
-                # to an unknown symbol - worth review, never a silent bind.
-                ukey = (span[0], span[1], name)
-                if ukey in seen:
-                    continue
-                seen.add(ukey)
-                reason = ("ambiguous: multiple symbols" if len(matches) > 1
-                          else "call-shaped reference resolves to no symbol")
-                unmatched.append(Unmatched(
-                    kind="markdown", doc_path=str(doc), doc_region=span,
-                    identifier=name, match_count=len(matches), reason=reason))
+            else:
+                for name, count in flagged:
+                    reason = ("ambiguous: multiple symbols" if count > 1
+                              else "call-shaped reference resolves to no symbol")
+                    unmatched.append(Unmatched(
+                        kind="markdown", doc_path=str(doc), doc_region=span,
+                        identifier=name, match_count=count, reason=reason))
     return candidates, unmatched
 
 
 def _references(lines: list[str]) -> list[tuple[int, str, bool]]:
     """(1-based line, identifier, strong) references. `strong` marks a
-    call-shaped token `name(...)`; weak marks a plain backtick identifier.
-    Inside fenced code blocks only call-shaped tokens are harvested, to keep
-    prose/variable noise out of the proposal."""
+    call-shaped `name(` token. Only inline-code backticks and fenced code
+    blocks contribute; plain running prose contributes nothing, so a prose
+    parenthetical like "the design (no-LLM)" is never read as a call.
+    Leading-underscore names are dropped as internal helpers."""
     out: list[tuple[int, str, bool]] = []
     in_fence = False
     for i, line in enumerate(lines, start=1):
@@ -239,16 +250,21 @@ def _references(lines: list[str]) -> list[tuple[int, str, bool]]:
             continue
         if in_fence:
             for m in _CALL.finditer(line):
-                out.append((i, m.group(1).split(".")[-1], True))
+                base = _tail(m.group(1))
+                if not base.startswith("_"):
+                    out.append((i, base, True))
             continue
-        for m in _CALL.finditer(line):
-            out.append((i, m.group(1).split(".")[-1], True))
         for span in _INLINE.findall(line):
             tok = span.strip()
-            base = tok.split("(")[0].split(".")[-1]
-            if _IDENT.match(base):
-                out.append((i, base, False))
+            strong = bool(_CALL.match(tok))
+            base = _tail(tok.split("(")[0])
+            if _IDENT.match(base) and not base.startswith("_"):
+                out.append((i, base, strong))
     return out
+
+
+def _tail(name: str) -> str:
+    return name.split(".")[-1]
 
 
 def _paragraphs(lines: list[str]) -> list[tuple[int, int]]:
