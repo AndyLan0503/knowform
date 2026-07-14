@@ -109,6 +109,56 @@ Rich sidecar frontmatter (titles, tags, ids, whatever your docs system needs)
 can coexist with the `knowform:` block in the same frontmatter — the parser
 reads its own block and ignores the rest.
 
+## Adopting a repo: `init`
+
+Wiring bindings by hand is tedious. `knowform init` discovers candidate
+doc↔code bindings for an unwired repo and proposes them for review — the
+`plan → apply` philosophy applied to onboarding: **propose, never enforce.**
+
+```bash
+knowform init                # scan the repo -> knowform.init.json
+$EDITOR knowform.init.json   # keep the good bindings, drop the wrong ones
+knowform init --write        # materialize: frontmatter + fences, manifest entries
+knowform sync                # bless the newly managed world
+```
+
+`init` is **read-only** over your repo — the only file it writes is the
+reviewable `knowform.init.json`. Nothing is materialized until you run
+`--write`.
+
+Discovery is deterministic and precision-first:
+
+- **Docstrings** — every documented function/class/method becomes a candidate
+  (`code-is-truth`; the docstring is the governed region).
+- **Markdown references** — backtick and call-shaped tokens in unmanaged `.md`
+  that resolve to exactly one symbol become candidates.
+- **Ambiguous or unresolved** references never bind silently; they land in an
+  `unmatched` list for you to resolve by hand.
+
+Direction is always proposed as `code-is-truth`; `doc-is-truth` is never
+auto-assigned (declaring a spec is a human decision).
+
+### Optional: LLM disambiguation
+
+References that are ambiguous (a name shared by several symbols) can be resolved
+by a model. This is **opt-in** — the default run spends zero tokens.
+
+```bash
+knowform init --llm          # use your local Claude Code login (no API key)
+knowform init --anthropic    # use the Anthropic API instead
+```
+
+- `--llm` shells out to your installed `claude` CLI, so it authenticates with
+  whatever you are already logged in with — a Claude subscription included. It
+  auto-detects the binary and, if it is missing, tells you rather than silently
+  falling back. No install beyond Claude Code itself.
+- `--anthropic` calls the Anthropic API directly; it needs `ANTHROPIC_API_KEY`
+  and the judge extra (`pipx install "knowform[judge]"`). Best for CI, where no
+  interactive login exists.
+
+Either backend only picks among the enumerated candidates — it can never invent
+a symbol, and its direction hints are clamped to `manual`.
+
 ## Ignoring paths
 
 Drop a `.knowformignore` at the repo root (one path prefix or glob per line,

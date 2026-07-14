@@ -1,5 +1,7 @@
-"""CLI: `python3 -m knowform {plan|sync|apply}`.
+"""CLI: `python3 -m knowform {init|plan|sync|apply}`.
 
+- `init`  - propose doc↔code bindings for an unwired repo (read-only; writes
+            only the `knowform.init.json` proposal artifact).
 - `plan`  - report doc↔code drift (read-only; no judge wired, zero tokens).
 - `sync`  - re-bless recorded hashes into `knowform.lock`.
 - `apply` - regenerate descriptive prose in the safe direction only; never
@@ -13,6 +15,8 @@ import sys
 from pathlib import Path
 
 from .apply import apply
+from .init import INIT_PROPOSAL, init, read_proposal, write_proposal
+from .materialize import materialize
 from .plan import plan
 from .sync import sync
 
@@ -62,6 +66,37 @@ def _cmd_apply(args) -> int:
     return 0 if result.ok else 1
 
 
+def _cmd_init(args) -> int:
+    root = Path(args.root)
+    if args.write:
+        proposal = read_proposal(root)
+        if proposal is None:
+            print(f"no {INIT_PROPOSAL}; run `knowform init` first",
+                  file=sys.stderr)
+            return 1
+        result = materialize(root, proposal)
+        print(f"materialized {len(result.docs_written)} doc(s), "
+              f"{len(result.manifest_entries)} manifest entry(ies)"
+              + (f", {len(result.skipped)} skipped" if result.skipped else ""))
+        return 0
+    matcher = None
+    if args.llm:
+        from .judge import ClaudeCliMatcher, ClaudeCliUnavailable
+        try:
+            matcher = ClaudeCliMatcher()
+        except ClaudeCliUnavailable as e:
+            print(str(e), file=sys.stderr)
+            return 1
+    elif args.anthropic:
+        from .judge import AnthropicMatcher
+        matcher = AnthropicMatcher()
+    proposal = init(root, matcher=matcher)
+    out = write_proposal(root, proposal)
+    print(f"proposed {len(proposal.candidates)} binding(s), "
+          f"{len(proposal.unmatched)} unmatched -> {out}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="knowform")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -83,6 +118,22 @@ def main(argv: list[str] | None = None) -> int:
     a.add_argument("--anthropic", action="store_true",
                    help="wire the live Anthropic generator (opt-in; network)")
     a.set_defaults(func=_cmd_apply)
+
+    i = sub.add_parser(
+        "init", help="propose doc↔code bindings (read-only; writes only "
+                     "knowform.init.json)")
+    i.add_argument("--root", default=".", help="repo root to scan")
+    i.add_argument("--write", action="store_true",
+                   help="materialize the reviewed knowform.init.json "
+                        "(frontmatter+fences and manifest entries)")
+    llm = i.add_mutually_exclusive_group()
+    llm.add_argument("--llm", action="store_true",
+                     help="Tier-2 fuzzy disambiguation via your local Claude "
+                          "Code login (auto-detects `claude`; no API key)")
+    llm.add_argument("--anthropic", action="store_true",
+                     help="Tier-2 via the Anthropic API instead "
+                          "(needs ANTHROPIC_API_KEY); not the default")
+    i.set_defaults(func=_cmd_init)
 
     args = parser.parse_args(argv)
     return args.func(args)
