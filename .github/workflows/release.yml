@@ -37,3 +37,19 @@ jobs:
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
+
+  # Move the `v1` tag that the README's Action + pre-commit examples pin, so
+  # those never need editing per release. Runs AFTER publish, so the build above
+  # only ever sees the exact vX.Y.Z tag on HEAD (v1 still points at the prior
+  # release), keeping hatch-vcs version derivation unambiguous.
+  promote-major:
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Point v1 at this release
+        run: |
+          git tag -f v1
+          git push -f origin v1
