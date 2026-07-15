@@ -66,6 +66,37 @@ def _cmd_apply(args) -> int:
     return 0 if result.ok else 1
 
 
+_UNMATCHED_ORDER = ("ambiguous", "stale-ref", "example")
+_UNMATCHED_GUIDANCE = {
+    "ambiguous": ("name multiple symbols",
+                  f"pick one in {INIT_PROPOSAL} (or re-run with --llm)"),
+    "stale-ref": ("no matching symbol",
+                  "fix the doc or the code (likely drift)"),
+    "example": ("illustration in a doc",
+                "ignore, or add the doc to .knowformignore"),
+}
+
+
+def _init_summary(proposal, out) -> str:
+    """Terminal summary after `init`: the proposal count, then the unmatched
+    grouped by category with a concrete next step for each."""
+    head = f"proposed {len(proposal.candidates)} binding(s) -> {out}"
+    if not proposal.unmatched:
+        return head
+    counts: dict[str, int] = {}
+    for u in proposal.unmatched:
+        counts[u.category] = counts.get(u.category, 0) + 1
+    lines = [head, f"{len(proposal.unmatched)} unmatched need review:"]
+    for cat in _UNMATCHED_ORDER:
+        n = counts.pop(cat, 0)
+        if n:
+            desc, action = _UNMATCHED_GUIDANCE[cat]
+            lines.append(f"  {n} {cat:<10}{desc:<23}-> {action}")
+    for cat, n in counts.items():   # any unknown/future category
+        lines.append(f"  {n} {cat}")
+    return "\n".join(lines)
+
+
 def _cmd_init(args) -> int:
     root = Path(args.root)
     if args.write:
@@ -92,8 +123,7 @@ def _cmd_init(args) -> int:
         matcher = AnthropicMatcher()
     proposal = init(root, matcher=matcher)
     out = write_proposal(root, proposal)
-    print(f"proposed {len(proposal.candidates)} binding(s), "
-          f"{len(proposal.unmatched)} unmatched -> {out}")
+    print(_init_summary(proposal, out))
     return 0
 
 
