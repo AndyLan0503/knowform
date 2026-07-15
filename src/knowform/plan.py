@@ -16,7 +16,7 @@ from .docstate import classify
 from .frontmatter import Direction, parse_frontmatter
 from .gitdiff import ChangedSet, changed_set
 from .graph import DocNode, build_graph, frontier
-from .judge import Judge, Verdict, VerdictKind, build_frontier
+from .judge import Judge, VerdictKind, build_frontier
 from .manifest import MANIFEST, load as load_manifest
 from .regions import (
     Region, hash_span, resolve_code_region, resolve_doc_region,
