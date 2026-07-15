@@ -1,2 +1,5 @@
 # Test fixtures are deliberately-broken example docs, not a governed corpus.
 tests/fixtures
+
+# Transient freebird run notes, not documentation.
+HANDOFF.md

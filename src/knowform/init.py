@@ -16,6 +16,7 @@ Two discovery sources:
 from __future__ import annotations
 
 import ast
+import difflib
 import json
 import re
 from dataclasses import dataclass, field
@@ -69,10 +70,14 @@ class Unmatched:
     identifier: str
     match_count: int
     reason: str
+    category: str = "stale-ref"     # ambiguous | stale-ref | example
+    context: str = "inline"         # inline | fenced
 
     def to_dict(self) -> dict:
         return {
             "kind": self.kind,
+            "category": self.category,
+            "context": self.context,
             "doc_path": self.doc_path,
             "doc_region": list(self.doc_region),
             "identifier": self.identifier,
@@ -158,7 +163,8 @@ def read_proposal(root: Path) -> Proposal | None:
             kind=u["kind"], doc_path=u["doc_path"],
             doc_region=(u["doc_region"][0], u["doc_region"][1]),
             identifier=u["identifier"], match_count=u["match_count"],
-            reason=u["reason"]))
+            reason=u["reason"], category=u.get("category", "stale-ref"),
+            context=u.get("context", "inline")))
     return proposal
 
 
@@ -167,8 +173,13 @@ def _candidate_key(c: Candidate) -> tuple:
             c.symbol or c.code_anchor or "")
 
 
+_CATEGORY_RANK = {"ambiguous": 0, "stale-ref": 1, "example": 2}
+
+
 def _unmatched_key(u: Unmatched) -> tuple:
-    return (u.doc_path, u.doc_region[0], u.doc_region[1], u.identifier)
+    # Actionable first (ambiguous, stale-ref), illustrative examples last.
+    return (_CATEGORY_RANK.get(u.category, 3), u.doc_path,
+            u.doc_region[0], u.doc_region[1], u.identifier)
 
 
 # --- Tier 1: docstrings ------------------------------------------------------
@@ -210,7 +221,14 @@ def _docstring_candidates(root: Path, py_files: list[Path],
 
 # --- Tier 0: markdown explicit references ------------------------------------
 
-_FENCE = re.compile(r"^\s*(```|~~~)")
+_FENCE = re.compile(r"^\s*(?:```|~~~)\s*([A-Za-z0-9_+-]*)")
+
+# Fenced blocks in these languages are documentation illustrations, not Python
+# API references - a 0-match call inside them is an example, not stale code.
+# Untagged and code-language (```python) fences stay reviewable as `stale-ref`.
+_EXAMPLE_LANGS = {"markdown", "md", "yaml", "yml", "toml", "json", "bash",
+                  "sh", "shell", "console", "text", "txt", "ini", "cfg",
+                  "diff", "html", "xml"}
 _INLINE = re.compile(r"`([^`]+)`")
 _CALL = re.compile(r"([A-Za-z_][A-Za-z0-9_.]*)\(")  # tight: no space before (
 _IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -228,15 +246,16 @@ def _markdown_candidates(root: Path, ignore: list[str],
             continue  # already managed -> not rescanned
         lines = text.split("\n")
         paras = _paragraphs(lines)
-        by_region: dict[tuple[int, int], list[tuple[str, bool]]] = {}
-        for line_no, name, strong in _references(lines):
+        by_region: dict[tuple[int, int],
+                        list[tuple[str, bool, str | None]]] = {}
+        for line_no, name, strong, fence_lang in _references(lines):
             by_region.setdefault(_paragraph_for(line_no, paras), []).append(
-                (name, strong))
+                (name, strong, fence_lang))
         for span, refs in sorted(by_region.items()):
             resolved: dict[str, tuple[_Symbol, str]] = {}
-            flagged: list[tuple[str, int]] = []
+            flagged: list[tuple[str, int, str | None]] = []
             seen_flag: set[str] = set()
-            for name, strong in refs:
+            for name, strong, fence_lang in refs:
                 matches = table.get(name, [])
                 if len(matches) == 1:
                     sym = matches[0]
@@ -247,7 +266,7 @@ def _markdown_candidates(root: Path, ignore: list[str],
                     # >1: genuinely ambiguous. 0 + call-shaped: looks like a
                     # call to an unknown symbol - worth review, never bound.
                     seen_flag.add(name)
-                    flagged.append((name, len(matches)))
+                    flagged.append((name, len(matches), fence_lang))
             # Invariant: a doc region maps to AT MOST ONE candidate. A region
             # naming exactly one symbol binds it; a multi-symbol region (dense
             # prose or a code fence) binds nothing rather than exploding.
@@ -261,39 +280,62 @@ def _markdown_candidates(root: Path, ignore: list[str],
                               f"in {sym.file}",
                     source_tier=0, code_anchor=sym.anchor))
             else:
-                for name, count in flagged:
-                    reason = ("ambiguous: multiple symbols" if count > 1
-                              else "call-shaped reference resolves to no symbol")
+                for name, count, fence_lang in flagged:
+                    category, context = _classify_unmatched(count, fence_lang)
                     unmatched.append(Unmatched(
                         kind="markdown", doc_path=str(doc), doc_region=span,
-                        identifier=name, match_count=count, reason=reason))
+                        identifier=name, match_count=count,
+                        reason=_UNMATCHED_REASON[category],
+                        category=category, context=context))
     return candidates, unmatched
 
 
-def _references(lines: list[str]) -> list[tuple[int, str, bool]]:
-    """(1-based line, identifier, strong) references. `strong` marks a
-    call-shaped `name(` token. Only inline-code backticks and fenced code
-    blocks contribute; plain running prose contributes nothing, so a prose
-    parenthetical like "the design (no-LLM)" is never read as a call.
-    Leading-underscore names are dropped as internal helpers."""
-    out: list[tuple[int, str, bool]] = []
-    in_fence = False
+_UNMATCHED_REASON = {
+    "ambiguous": "ambiguous: names multiple symbols",
+    "stale-ref": "references a symbol not found in the code",
+    "example": "illustrative reference inside a non-code fenced block",
+}
+
+
+def _classify_unmatched(count: int, fence_lang: str | None) -> tuple[str, str]:
+    """Bucket a flagged reference. `ambiguous` (>1 symbol) and `stale-ref`
+    (0 symbols, possibly drift) are actionable; a 0-match call inside a non-code
+    fenced block is an `example` (documentation illustration, not a binding)."""
+    context = "fenced" if fence_lang is not None else "inline"
+    if count > 1:
+        return "ambiguous", context
+    if fence_lang is not None and fence_lang in _EXAMPLE_LANGS:
+        return "example", context
+    return "stale-ref", context
+
+
+def _references(lines: list[str]) -> list[tuple[int, str, bool, str | None]]:
+    """(1-based line, identifier, strong, fence_lang) references. `strong` marks
+    a call-shaped `name(` token; `fence_lang` is the lowercased language tag when
+    the reference sits in a fenced block, else None (inline prose backtick). Only
+    inline-code backticks and fenced code blocks contribute; plain running prose
+    contributes nothing, so a prose parenthetical like "the design (no-LLM)" is
+    never read as a call. Leading-underscore names are dropped as internal."""
+    out: list[tuple[int, str, bool, str | None]] = []
+    fence_lang: str | None = None   # None = outside any fence
     for i, line in enumerate(lines, start=1):
-        if _FENCE.match(line):
-            in_fence = not in_fence
+        m = _FENCE.match(line)
+        if m:
+            fence_lang = ((m.group(1) or "").lower()
+                          if fence_lang is None else None)
             continue
-        if in_fence:
-            for m in _CALL.finditer(line):
-                base = _tail(m.group(1))
+        if fence_lang is not None:
+            for c in _CALL.finditer(line):
+                base = _tail(c.group(1))
                 if not base.startswith("_"):
-                    out.append((i, base, True))
+                    out.append((i, base, True, fence_lang))
             continue
         for span in _INLINE.findall(line):
             tok = span.strip()
             strong = bool(_CALL.match(tok))
             base = _tail(tok.split("(")[0])
             if _IDENT.match(base) and not base.startswith("_"):
-                out.append((i, base, strong))
+                out.append((i, base, strong, None))
     return out
 
 
@@ -337,17 +379,24 @@ def _paragraph_for(line_no: int, paras: list[tuple[int, int]]
 
 def _llm_resolve(root: Path, proposal: Proposal,
                  table: dict[str, list[_Symbol]], matcher: Matcher) -> None:
-    """Ask the matcher to bind the ambiguous (multi-symbol) `unmatched`
-    references. A confident, non-hallucinated pick becomes a Tier-2 candidate;
-    everything else stays unmatched. Precision holds: only ONE candidate per
-    doc region, never doc-is-truth, never a symbol outside the presented set."""
+    """Ask the matcher to bind the `unmatched` references it can. An `ambiguous`
+    reference is disambiguated among the symbols sharing its name; a `stale-ref`
+    is fuzzy-matched against a shortlist of similarly-named symbols (a likely
+    rename); `example` references are illustrations and never bound. A confident,
+    non-hallucinated pick becomes a Tier-2 candidate; everything else stays
+    unmatched. Precision holds: one candidate per region, never doc-is-truth,
+    never a symbol outside the presented set."""
     taken = {(c.doc_path, c.doc_region) for c in proposal.candidates}
     kept: list[Unmatched] = []
     for u in proposal.unmatched:
-        options = table.get(u.identifier, [])
-        if (u.match_count <= 1 or len(options) < 2
-                or (u.doc_path, u.doc_region) in taken):
-            kept.append(u)  # nothing to disambiguate / region already bound
+        if u.category == "ambiguous":
+            options = table.get(u.identifier, [])
+        elif u.category == "stale-ref":
+            options = _shortlist(u.identifier, table)
+        else:  # example: an illustration, not a binding
+            options = []
+        if not options or (u.doc_path, u.doc_region) in taken:
+            kept.append(u)
             continue
         result = matcher(MatchInput(
             doc_path=u.doc_path,
@@ -360,13 +409,30 @@ def _llm_resolve(root: Path, proposal: Proposal,
             continue
         sym, direction = chosen
         taken.add((u.doc_path, u.doc_region))
+        verb = "disambiguated" if u.category == "ambiguous" else "fuzzy-matched"
         proposal.candidates.append(Candidate(
             kind="markdown", governs=sym.file, doc_path=u.doc_path,
-            doc_region=u.doc_region, direction=direction, confidence="medium",
+            doc_region=u.doc_region, direction=direction,
+            confidence="medium" if u.category == "ambiguous" else "low",
             rationale=result.rationale or
-            f"LLM disambiguated `{u.identifier}` -> {sym.anchor}",
+            f"LLM {verb} `{u.identifier}` -> {sym.anchor}",
             source_tier=2, code_anchor=sym.anchor))
     proposal.unmatched = kept
+
+
+def _shortlist(identifier: str, table: dict[str, list[_Symbol]],
+               limit: int = 5, cutoff: float = 0.6) -> list[_Symbol]:
+    """Plausible real symbols for a 0-match reference: the closest symbol names
+    by string similarity. Bounded, so the matcher only ever picks from a small
+    real set (never invents). Empty when nothing is close enough - a genuinely
+    removed symbol then stays a `stale-ref` for a human rather than being
+    force-bound."""
+    names = difflib.get_close_matches(identifier, list(table.keys()),
+                                      n=limit, cutoff=cutoff)
+    out: list[_Symbol] = []
+    for name in names:
+        out.extend(table.get(name, []))
+    return out
 
 
 def _accept_match(result: MatchResult, options: list[_Symbol]

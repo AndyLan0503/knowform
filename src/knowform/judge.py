@@ -202,11 +202,12 @@ _MATCH_SCHEMA = {
 }
 
 _MATCH_PROMPT = (
-    "A documentation passage references `{identifier}`, which is ambiguous: "
-    "several code symbols share that name. Decide which ONE symbol the passage "
-    "describes, or that none clearly does. Choose only from the listed "
-    "candidates - never invent a symbol. Prefer code-is-truth; use manual when "
-    "unsure of direction; never doc-is-truth.\n\n"
+    "A documentation passage references `{identifier}`. From the candidate code "
+    "symbols below, decide which ONE the passage describes, or that none clearly "
+    "does. The reference may name a candidate exactly or approximately (a "
+    "rename) - choose only from the listed candidates, never invent a symbol. "
+    "Prefer code-is-truth; use manual when unsure of direction; never "
+    "doc-is-truth.\n\n"
     "DOC ({doc_path}):\n{region}\n\n"
     "CANDIDATE SYMBOLS:\n{candidates}"
 )
