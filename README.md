@@ -63,6 +63,14 @@ The steady state — nothing changed — costs nothing.
 
 ```bash
 pipx install knowform      # or: pip install knowform
+```
+
+Onboard an existing repo, then run the steady-state loop - the same order as
+Terraform's `init → plan → apply`:
+
+```bash
+knowform init              # discover doc↔code bindings -> knowform.init.json
+knowform init --write      # materialize the reviewed proposal
 knowform plan              # report drift (read-only)
 knowform sync              # bless the current world into knowform.lock
 knowform apply             # regenerate prose in the safe direction
@@ -75,45 +83,11 @@ pipx install "knowform[judge]"
 knowform apply --anthropic
 ```
 
-## Managed docs
-
-A doc opts in with a `knowform:` frontmatter block and marks the region it
-governs with anchor fences:
-
-```markdown
----
-knowform:
-  direction: code-is-truth
-  bindings:
-    - doc_anchor: add-behavior
-      governs: calc.py
-      code_anchor: "def add"
----
-
-# Calc
-
-<!-- knowform:add-behavior:start -->
-`add(a, b)` returns the sum of its two arguments.
-<!-- knowform:add-behavior:end -->
-
-Prose outside the fences is never touched.
-```
-
-- `governs` is a file or glob, contained to the repo (paths escaping root
-  surface as errors, never crash).
-- `code_anchor` narrows to a symbol via `ast` (`def add`, `class Foo`, or a
-  bare name); without one the whole file is the region.
-- A `.md` with no `knowform:` block is unmanaged and ignored.
-
-Rich sidecar frontmatter (titles, tags, ids, whatever your docs system needs)
-can coexist with the `knowform:` block in the same frontmatter — the parser
-reads its own block and ignores the rest.
-
 ## Adopting a repo: `init`
 
-Wiring bindings by hand is tedious. `knowform init` discovers candidate
-doc↔code bindings for an unwired repo and proposes them for review — the
-`plan → apply` philosophy applied to onboarding: **propose, never enforce.**
+`knowform init` is where you start. It discovers candidate doc↔code bindings
+for an unwired repo and proposes them for review — the `plan → apply`
+philosophy applied to onboarding: **propose, never enforce.**
 
 ```bash
 knowform init                # scan the repo -> knowform.init.json
@@ -159,6 +133,40 @@ knowform init --anthropic    # use the Anthropic API instead
 Either backend only picks among the enumerated candidates — it can never invent
 a symbol, and its direction hints are clamped to `manual`.
 
+## Managed docs
+
+A doc opts in with a `knowform:` frontmatter block and marks the region it
+governs with anchor fences:
+
+```markdown
+---
+knowform:
+  direction: code-is-truth
+  bindings:
+    - doc_anchor: add-behavior
+      governs: calc.py
+      code_anchor: "def add"
+---
+
+# Calc
+
+<!-- knowform:add-behavior:start -->
+`add(a, b)` returns the sum of its two arguments.
+<!-- knowform:add-behavior:end -->
+
+Prose outside the fences is never touched.
+```
+
+- `governs` is a file or glob, contained to the repo (paths escaping root
+  surface as errors, never crash).
+- `code_anchor` narrows to a symbol via `ast` (`def add`, `class Foo`, or a
+  bare name); without one the whole file is the region.
+- A `.md` with no `knowform:` block is unmanaged and ignored.
+
+Rich sidecar frontmatter (titles, tags, ids, whatever your docs system needs)
+can coexist with the `knowform:` block in the same frontmatter — the parser
+reads its own block and ignores the rest.
+
 ## Ignoring paths
 
 Drop a `.knowformignore` at the repo root (one path prefix or glob per line,
@@ -169,7 +177,7 @@ Drop a `.knowformignore` at the repo root (one path prefix or glob per line,
 **GitHub Action** (composite):
 
 ```yaml
-- uses: andylan/knowform@v1
+- uses: AndyLan0503/knowform@v0
   with:
     args: plan
 ```
@@ -178,11 +186,15 @@ Drop a `.knowformignore` at the repo root (one path prefix or glob per line,
 
 ```yaml
 repos:
-  - repo: https://github.com/andylan/knowform
-    rev: v0.1.0
+  - repo: https://github.com/AndyLan0503/knowform
+    rev: v0
     hooks:
       - id: knowform
 ```
+
+Both pin the moving major tag (`v0` today), which each release re-points to the
+latest compatible version - so these snippets only change at a major bump, never
+on routine releases.
 
 ## License
 

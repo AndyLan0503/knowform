@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "knowform"
 dynamic = ["version"]
-description = "Terraform for docs — declarative doc↔code drift reconciliation (plan / sync / apply)."
+description = "Terraform for docs - declarative doc↔code drift reconciliation: init · plan · sync · apply."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
