@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .frontmatter import Binding, fence_span
+from .markdown import blocks as _md_blocks, headings as _md_headings
 
 
 @dataclass(frozen=True)
@@ -67,6 +68,129 @@ def resolve_doc_region(root: Path, doc_path: Path, binding: Binding) -> Region:
         return Region(doc_path, 1, line_count, whole=True)
     start, end = span
     return Region(doc_path, start, max(start, end))
+
+
+@dataclass(frozen=True)
+class DocAnchorResult:
+    """A resolved out-of-band doc region, or an `error` the plan must surface
+    (heading not found / ambiguous / block out of range) - never a silent
+    whole-file degrade, since an out-of-band anchor is an explicit human choice."""
+    region: Region | None
+    error: str | None = None
+
+
+def _ancestors(hs: list, idx: int) -> list:
+    """The nested-parent chain of heading `idx` (outermost first): the closest
+    preceding heading of each strictly-smaller level."""
+    chain: list = []
+    level = hs[idx].level
+    for k in range(idx - 1, -1, -1):
+        if hs[k].level < level:
+            chain.append(hs[k])
+            level = hs[k].level
+    chain.reverse()
+    return chain
+
+
+def _match_heading_path(hs: list, path: tuple[str, ...]):
+    """The unique heading whose full parent-path ends with `path`, or "none" /
+    "ambiguous"."""
+    matches = []
+    for idx, h in enumerate(hs):
+        if h.text != path[-1]:
+            continue
+        full = [a.text for a in _ancestors(hs, idx)] + [h.text]
+        if full[-len(path):] == list(path):
+            matches.append(h)
+    if not matches:
+        return "none"
+    if len(matches) > 1:
+        return "ambiguous"
+    return matches[0]
+
+
+def _trim_blanks(lines: list[str], start: int, end: int) -> tuple[int, int]:
+    while start <= end and not lines[start - 1].strip():
+        start += 1
+    while end >= start and not lines[end - 1].strip():
+        end -= 1
+    return start, end
+
+
+def resolve_heading_region(root: Path, doc_path: Path,
+                           heading: tuple[str, ...],
+                           block: int | None = None) -> DocAnchorResult:
+    """Resolve an out-of-band markdown anchor (heading path, optional 1-based
+    block) to an exact line span, recomputed each run so edits elsewhere never
+    misalign it. Failures surface as errors, never guesses."""
+    what = "/".join(heading) + (f"#{block}" if block else "")
+    try:
+        text = (root / doc_path).read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return DocAnchorResult(None, f"cannot read {doc_path}")
+    if not heading:
+        return DocAnchorResult(None, f"empty heading path for {doc_path}")
+
+    hs = _md_headings(text)
+    match = _match_heading_path(hs, tuple(heading))
+    if match == "none":
+        return DocAnchorResult(None, f"heading {what!r} not found in {doc_path}")
+    if match == "ambiguous":
+        return DocAnchorResult(None, f"heading {what!r} is ambiguous in {doc_path}")
+
+    lines = text.split("\n")
+    end = len(lines)
+    for h in hs:
+        if h.line > match.line and h.level <= match.level:
+            end = h.line - 1
+            break
+    start, end = _trim_blanks(lines, match.line + 1, end)
+    if start > end:
+        return DocAnchorResult(None, f"section {what!r} is empty in {doc_path}")
+
+    if block is not None:
+        blks = _md_blocks(lines, start, end)
+        if block < 1 or block > len(blks):
+            return DocAnchorResult(
+                None, f"block {block} out of range under {what!r} in {doc_path}")
+        start, end = blks[block - 1]
+    return DocAnchorResult(Region(doc_path, start, end))
+
+
+def derive_heading_anchor(root: Path, doc_path: Path, region: Region):
+    """The `(heading, block)` anchor that resolves to `region` - the inverse of
+    `resolve_heading_region`, used to materialize a binding out-of-band. Returns
+    None when the region is not under any heading (preamble), i.e. not
+    heading-addressable."""
+    try:
+        text = (root / doc_path).read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+    lines = text.split("\n")
+    hs = _md_headings(text)
+    containing = None
+    ci = -1
+    for idx, h in enumerate(hs):
+        if h.line < region.start:
+            containing, ci = h, idx
+        else:
+            break
+    if containing is None:
+        return None
+    heading = tuple(a.text for a in _ancestors(hs, ci)) + (containing.text,)
+    end = len(lines)
+    for h in hs:
+        if h.line > containing.line and h.level <= containing.level:
+            end = h.line - 1
+            break
+    start, end = _trim_blanks(lines, containing.line + 1, end)
+    blks = _md_blocks(lines, start, end)
+    if len(blks) <= 1:
+        return heading, None
+    for i, (bs, be) in enumerate(blks, start=1):
+        if bs <= region.start <= be:
+            return heading, i
+    return heading, None
 
 
 @dataclass(frozen=True)

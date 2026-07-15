@@ -21,7 +21,7 @@ from .manifest import MANIFEST, load as load_manifest
 from .regions import (
     Region, hash_span, resolve_code_region, resolve_doc_region,
     resolve_docstring_code_region, resolve_docstring_region,
-    resolve_governed_files,
+    resolve_governed_files, resolve_heading_region,
 )
 
 
@@ -228,6 +228,40 @@ def _resolve_manifest(root: Path, out: Resolution) -> None:
                 code_hash=_safe_hash(root, code_region)))
             out.doc_nodes.append(DocNode(
                 key=key, region=code_region, node_id=key))
+            if (root / gov_file).suffix == ".py":
+                out.py_files.add(gov_file)
+
+    for mb in manifest.markdown:
+        what = "/".join(mb.heading) + (f"#{mb.block}" if mb.block else "")
+        key = f"{mb.doc}#heading:{what}"
+        anchor = resolve_heading_region(root, Path(mb.doc), mb.heading, mb.block)
+        if anchor.error is not None:
+            out.errors.append(PlanEntry(
+                entry_id=key, key=key, direction=mb.direction.value,
+                governs=mb.governs, doc_hash=None, code_hash=None,
+                verdict="error", on_frontier=False, error=anchor.error))
+            continue
+        doc_region = anchor.region
+        for gov in resolve_governed_files(root, mb.governs):
+            if gov.error is not None:
+                out.errors.append(PlanEntry(
+                    entry_id=key, key=key, direction=mb.direction.value,
+                    governs=mb.governs, doc_hash=None, code_hash=None,
+                    verdict="error", on_frontier=False, error=gov.error))
+                continue
+            gov_file = gov.path
+            code_region = resolve_code_region(root, gov_file, mb.code_anchor)
+            entry_id = f"{key}::{gov_file}"
+            if mb.code_anchor:
+                entry_id += f"::{mb.code_anchor}"
+            out.resolved.append(_Resolved(
+                entry_id=entry_id, key=key, direction=mb.direction,
+                governs=str(gov_file), doc_region=doc_region,
+                code_region=code_region, binding=mb,
+                doc_hash=_safe_hash(root, doc_region),
+                code_hash=_safe_hash(root, code_region)))
+            out.doc_nodes.append(DocNode(
+                key=key, region=code_region, node_id=entry_id))
             if (root / gov_file).suffix == ".py":
                 out.py_files.add(gov_file)
 
