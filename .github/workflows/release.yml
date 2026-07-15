@@ -37,3 +37,21 @@ jobs:
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
+
+  # Move the moving major tag (v0, v1, ...) that the README's Action + pre-commit
+  # examples pin, so those snippets never change on routine releases. The tag
+  # number tracks the package major, computed from this release. Runs AFTER
+  # publish, so the build above only sees the exact vX.Y.Z tag on HEAD (the major
+  # tag still points at the prior release), keeping hatch-vcs derivation clean.
+  promote-major:
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Point the major tag at this release
+        run: |
+          MAJOR="v$(echo "${GITHUB_REF_NAME#v}" | cut -d. -f1)"
+          git tag -f "$MAJOR"
+          git push -f origin "$MAJOR"
