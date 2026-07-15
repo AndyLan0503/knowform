@@ -3,7 +3,7 @@ bindings for a repo with no knowform wiring.
 
 Read-only over the repo: it proposes, it never materializes. The only artifact
 it writes is `knowform.init.json` - a reviewable proposal a human accepts
-before a later milestone writes frontmatter/fences/manifest.
+before `init --write` records the bindings out-of-band in the manifest.
 
 Two discovery sources:
 - Tier 1 docstrings: every documented function/class/method is a candidate
@@ -22,10 +22,9 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .frontmatter import Direction, parse_frontmatter
 from .judge import Matcher, MatchInput, MatchResult
-from .manifest import load as load_manifest
-from .plan import _managed_docs, _pruned_walk, load_ignore
+from .manifest import Direction, load as load_manifest
+from .plan import _pruned_walk, load_ignore
 from .regions import (
     _docstring_span, resolve_docstring_region, resolve_governed_files,
 )
@@ -116,7 +115,7 @@ def init(root: Path, matcher: "Matcher | None" = None) -> Proposal:
     ignore = load_ignore(root)
     py_files = _pruned_walk(root, ".py", ignore)
     table = _symbol_table(root, py_files)
-    bound = _bound(root, ignore)
+    bound = _bound(root)
 
     candidates: list[Candidate] = []
     unmatched: list[Unmatched] = []
@@ -242,8 +241,6 @@ def _markdown_candidates(root: Path, ignore: list[str],
     unmatched: list[Unmatched] = []
     for doc in _pruned_walk(root, ".md", ignore):
         text = (root / doc).read_text(encoding="utf-8")
-        if parse_frontmatter(text) is not None:
-            continue  # already managed -> not rescanned
         lines = text.split("\n")
         paras = _paragraphs(lines)
         by_region: dict[tuple[int, int],
@@ -478,26 +475,23 @@ def _symbol_table(root: Path, py_files: list[Path]
     return table
 
 
-def _bound(root: Path, ignore: list[str]) -> set[tuple[str, str]]:
-    """(governed-file, bare-symbol-name) pairs already bound by an existing
-    manifest or frontmatter binding - skipped so `init` never re-proposes."""
+def _bound(root: Path) -> set[tuple[str, str]]:
+    """(governed-file, bare-symbol-name) pairs already bound by a manifest
+    binding (docstring or markdown) - skipped so `init` never re-proposes."""
     out: set[tuple[str, str]] = set()
     manifest = load_manifest(root)
-    if manifest is not None and not manifest.error:
-        for db in manifest.docstrings:
-            for gov in resolve_governed_files(root, db.governs):
-                if gov.path is not None:
-                    out.add((str(gov.path), _bare(db.symbol)))
-    for doc in _managed_docs(root, ignore):
-        managed = parse_frontmatter((root / doc).read_text(encoding="utf-8"))
-        if managed is None or managed.error:
+    if manifest is None or manifest.error:
+        return out
+    for db in manifest.docstrings:
+        for gov in resolve_governed_files(root, db.governs):
+            if gov.path is not None:
+                out.add((str(gov.path), _bare(db.symbol)))
+    for mb in manifest.markdown:
+        if not mb.code_anchor:
             continue
-        for b in managed.bindings:
-            if not b.code_anchor:
-                continue
-            for gov in resolve_governed_files(root, b.governs):
-                if gov.path is not None:
-                    out.add((str(gov.path), _bare(b.code_anchor)))
+        for gov in resolve_governed_files(root, mb.governs):
+            if gov.path is not None:
+                out.add((str(gov.path), _bare(mb.code_anchor)))
     return out
 
 

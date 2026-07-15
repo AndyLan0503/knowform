@@ -13,7 +13,6 @@ import hashlib
 from dataclasses import dataclass
 from pathlib import Path
 
-from .frontmatter import Binding, fence_span
 from .markdown import blocks as _md_blocks, headings as _md_headings
 
 
@@ -58,16 +57,6 @@ def normalize(span: str) -> str:
 def hash_span(span: str) -> str:
     digest = hashlib.sha256(normalize(span).encode("utf-8")).hexdigest()
     return f"sha256:{digest}"
-
-
-def resolve_doc_region(root: Path, doc_path: Path, binding: Binding) -> Region:
-    text = (root / doc_path).read_text(encoding="utf-8")
-    span = fence_span(text, binding.doc_anchor)
-    line_count = len(text.splitlines()) or 1
-    if span is None:
-        return Region(doc_path, 1, line_count, whole=True)
-    start, end = span
-    return Region(doc_path, start, max(start, end))
 
 
 @dataclass(frozen=True)

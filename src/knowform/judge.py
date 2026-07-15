@@ -16,7 +16,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Callable, Protocol
 
-from .frontmatter import Binding, Direction
+from .manifest import Direction
 from .regions import Region
 
 
@@ -79,7 +79,7 @@ def _signature(node: ast.AST) -> str:
 
 
 def build_frontier(root: Path, key: str, direction: Direction,
-                   binding: Binding, doc_region: Region,
+                   binding: object, doc_region: Region,
                    code_region: Region) -> JudgeInput:
     return JudgeInput(
         key=key,

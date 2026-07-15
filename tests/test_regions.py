@@ -1,9 +1,8 @@
 import unittest
 from pathlib import Path
 
-from knowform.frontmatter import Binding
 from knowform.regions import (
-    hash_span, normalize, resolve_code_region, resolve_doc_region,
+    hash_span, normalize, resolve_code_region,
     resolve_governed_files,
 )
 
@@ -25,20 +24,6 @@ class NormalizeHashTest(unittest.TestCase):
 
     def test_hash_prefix(self):
         self.assertTrue(hash_span("x").startswith("sha256:"))
-
-
-class DocRegionTest(unittest.TestCase):
-    def test_fenced_region(self):
-        b = Binding(doc_anchor="add-behavior", governs="calc.py")
-        region = resolve_doc_region(FIX, Path("managed_add.md"), b)
-        self.assertFalse(region.whole)
-        self.assertIn("returns the sum", region.text(FIX))
-
-    def test_absent_fence_degrades_to_whole(self):
-        b = Binding(doc_anchor="overview", governs="calc.py")
-        region = resolve_doc_region(FIX, Path("managed_whole.md"), b)
-        self.assertTrue(region.whole)
-        self.assertEqual(region.start, 1)
 
 
 class CodeRegionTest(unittest.TestCase):
@@ -63,7 +48,7 @@ class CodeRegionTest(unittest.TestCase):
         self.assertTrue(r.whole)
 
     def test_non_python_degrades_to_whole_file(self):
-        r = resolve_code_region(FIX, Path("managed_add.md"), "def add")
+        r = resolve_code_region(FIX, Path("unmanaged.md"), "def add")
         self.assertTrue(r.whole)
 
     def test_no_anchor_is_whole_file(self):

@@ -1,9 +1,7 @@
-import json
 import tempfile
 import unittest
 from pathlib import Path
 
-from knowform.manifest import MANIFEST, load as load_manifest
 from knowform.regions import resolve_heading_region
 
 DOC = (
@@ -94,33 +92,6 @@ class HeadingResolverTest(unittest.TestCase):
                 "## Real\n\ntext\n\n```python\n# not a heading\n```\n",
                 encoding="utf-8")
             self.assertIn("text", self._text(root, ("Real",)))
-
-
-class ManifestMarkdownTest(unittest.TestCase):
-    def test_parses_markdown_binding(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            (root / MANIFEST).write_text(json.dumps({
-                "version": 1,
-                "markdown": [{
-                    "doc": "g.md", "heading": ["Model", "Behavior"],
-                    "block": 1, "governs": "lib.py", "code_anchor": "def add",
-                    "direction": "code-is-truth"}]}), encoding="utf-8")
-            m = load_manifest(root)
-            self.assertIsNone(m.error)
-            self.assertEqual(len(m.markdown), 1)
-            mb = m.markdown[0]
-            self.assertEqual(mb.heading, ("Model", "Behavior"))
-            self.assertEqual(mb.block, 1)
-            self.assertEqual(mb.code_anchor, "def add")
-
-    def test_missing_field_is_error(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            (root / MANIFEST).write_text(json.dumps({
-                "markdown": [{"doc": "g.md", "governs": "lib.py"}]}),
-                encoding="utf-8")
-            self.assertIsNotNone(load_manifest(root).error)
 
 
 if __name__ == "__main__":

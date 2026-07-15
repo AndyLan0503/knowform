@@ -1,9 +1,10 @@
-"""`knowform.bindings.json`: a central binding source for regions with no
-frontmatter host. Python docstrings today - a `.py` cannot carry `knowform:`
-frontmatter, so a docstring binding is declared here.
+"""`knowform.bindings.json`: the central, out-of-band binding source. All
+bindings live here so docs and code stay free of inline markup:
+- docstring bindings target a Python symbol's docstring;
+- markdown bindings target a doc region by heading path (+ optional block).
 
 JSON (not TOML) to keep `requires-python >=3.10` and stay consistent with
-`knowform.lock` and the init proposal artifact. Docstring bindings default to
+`knowform.lock` and the init proposal artifact. Bindings default to
 `code-is-truth` (the doc describes the code); direction is never inferred to
 `doc-is-truth`.
 """
@@ -11,11 +12,17 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
+from enum import Enum
 from pathlib import Path
 
-from .frontmatter import Direction
-
 MANIFEST = "knowform.bindings.json"
+
+
+class Direction(str, Enum):
+    """Who is authoritative for a binding."""
+    CODE_IS_TRUTH = "code-is-truth"
+    DOC_IS_TRUTH = "doc-is-truth"
+    MANUAL = "manual"
 
 
 @dataclass(frozen=True)

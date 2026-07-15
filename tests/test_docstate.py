@@ -6,9 +6,36 @@ from pathlib import Path
 
 from knowform.docstate import DocState, Record, classify, load, write
 from knowform.judge import VerdictKind
+from knowform.manifest import MANIFEST
 from knowform.sync import sync
 
-FIX = Path(__file__).parent / "fixtures"
+CALC = (
+    '"""Tiny module governed by out-of-band bindings."""\n\n\n'
+    "def add(a, b):\n    return a + b\n\n\n"
+    "def scaled_add(a, b, factor):\n    return add(a, b) * factor\n"
+)
+
+# Plain markdown: bindings live only in the manifest, never in the doc.
+DOC_ADD = "# Calc\n\n## Add\n\n`add(a, b)` returns the sum of its two arguments.\n"
+DOC_WHOLE = "# Calc\n\n## Overview\n\nWhole-file overview prose.\n"
+DOC_SCALED = ("# Calc\n\n## Scaled\n\n"
+              "`scaled_add(a, b, factor)` returns `add(a, b)` times `factor`.\n")
+
+# Out-of-band bindings mirroring the old inline managed docs.
+BINDINGS = {
+    "version": 1,
+    "markdown": [
+        {"doc": "managed_add.md", "heading": ["Add"], "governs": "calc.py",
+         "code_anchor": "def add", "direction": "code-is-truth"},
+        {"doc": "managed_whole.md", "heading": ["Overview"], "governs": "calc.py",
+         "direction": "doc-is-truth"},
+        {"doc": "managed_scaled.md", "heading": ["Scaled"], "governs": "calc.py",
+         "code_anchor": "def scaled_add", "direction": "code-is-truth"},
+    ],
+}
+
+# Entry-id of the `add` binding under the new out-of-band key scheme.
+ADD_KEY = "managed_add.md#heading:Add::calc.py::def add"
 
 
 def git(root: Path, *args: str) -> None:
@@ -17,14 +44,16 @@ def git(root: Path, *args: str) -> None:
 
 
 class Repo:
-    """A throwaway git repo seeded from the calc fixtures."""
+    """A throwaway git repo with plain docs bound out-of-band via the manifest."""
 
     def __init__(self, tmp: Path):
         self.root = tmp
-        for name in ["calc.py", "managed_add.md", "managed_whole.md",
-                     "managed_scaled.md"]:
-            (self.root / name).write_text(
-                (FIX / name).read_text(encoding="utf-8"), encoding="utf-8")
+        (self.root / "calc.py").write_text(CALC, encoding="utf-8")
+        (self.root / "managed_add.md").write_text(DOC_ADD, encoding="utf-8")
+        (self.root / "managed_whole.md").write_text(DOC_WHOLE, encoding="utf-8")
+        (self.root / "managed_scaled.md").write_text(DOC_SCALED, encoding="utf-8")
+        (self.root / MANIFEST).write_text(
+            json.dumps(BINDINGS), encoding="utf-8")
         git(self.root, "init", "-q")
         git(self.root, "config", "user.email", "t@t.t")
         git(self.root, "config", "user.name", "t")
@@ -96,7 +125,7 @@ class SyncTest(unittest.TestCase):
             result = sync(repo.root)
             state = load(repo.root)
             self.assertIsNotNone(state)
-            rec = state.records["managed_add.md#add-behavior::calc.py::def add"]
+            rec = state.records[ADD_KEY]
             self.assertEqual(rec.last_verdict, IS)
             self.assertTrue(rec.doc_hash.startswith("sha256:"))
             self.assertTrue(rec.code_hash.startswith("sha256:"))
@@ -110,17 +139,19 @@ class SyncTest(unittest.TestCase):
             (repo.root / "mod_a.py").write_text("def a():\n    return 1\n")
             (repo.root / "mod_b.py").write_text("def b():\n    return 2\n")
             (repo.root / "managed_glob.md").write_text(
-                "---\nknowform:\n  direction: code-is-truth\n"
-                "  bindings:\n    - doc_anchor: mods\n"
-                "      governs: mod_*.py\n---\n\n"
-                "<!-- knowform:mods:start -->\ncovers mods\n"
-                "<!-- knowform:mods:end -->\n")
+                "# Modules\n\n## Mods\n\ncovers mods\n", encoding="utf-8")
+            bindings = json.loads(json.dumps(BINDINGS))
+            bindings["markdown"].append(
+                {"doc": "managed_glob.md", "heading": ["Mods"],
+                 "governs": "mod_*.py", "direction": "code-is-truth"})
+            (repo.root / MANIFEST).write_text(
+                json.dumps(bindings), encoding="utf-8")
             git(repo.root, "add", "-A")
             git(repo.root, "commit", "-q", "-m", "glob")
             sync(repo.root)
             state = load(repo.root)
             glob_keys = [k for k in state.records
-                         if k.startswith("managed_glob.md#mods")]
+                         if k.startswith("managed_glob.md#heading:Mods")]
             self.assertEqual(len(glob_keys), 2, glob_keys)
             self.assertEqual(
                 {state.records[k].governs for k in glob_keys},
