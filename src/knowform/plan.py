@@ -13,22 +13,21 @@ from pathlib import Path
 
 from . import docstate
 from .docstate import classify
-from .frontmatter import Direction, parse_frontmatter
 from .gitdiff import ChangedSet, changed_set
 from .graph import DocNode, build_graph, frontier
 from .judge import Judge, VerdictKind, build_frontier
-from .manifest import MANIFEST, load as load_manifest
+from .manifest import MANIFEST, Direction, load as load_manifest
 from .regions import (
-    Region, hash_span, resolve_code_region, resolve_doc_region,
+    Region, hash_span, resolve_code_region,
     resolve_docstring_code_region, resolve_docstring_region,
-    resolve_governed_files,
+    resolve_governed_files, resolve_heading_region,
 )
 
 
 @dataclass
 class PlanEntry:
     entry_id: str                # unique per (binding, governed-file)
-    key: str                     # <doc-path>#<doc_anchor>
+    key: str                     # per-binding key (heading/docstring anchor)
     direction: str | None
     governs: str
     doc_hash: str | None
@@ -111,10 +110,6 @@ def _pruned_walk(root: Path, suffix: str,
     return sorted(out)
 
 
-def _managed_docs(root: Path, ignore: list[str]) -> list[Path]:
-    return _pruned_walk(root, ".md", ignore)
-
-
 @dataclass
 class _Resolved:
     entry_id: str
@@ -140,63 +135,20 @@ class Resolution:
 
 
 def resolve_bindings(root: Path) -> Resolution:
-    """Resolve every managed doc's bindings without any git/judge/lockfile
-    signal - pure region resolution and hashing (read-only)."""
+    """Resolve every `knowform.bindings.json` binding to hashed doc/code regions
+    - pure region resolution and hashing, no git/judge/lockfile signal
+    (read-only). Bindings are declared out-of-band; docs carry no markup."""
     root = Path(root).resolve()
-    ignore = load_ignore(root)
-    out = Resolution(ignore=ignore)
-    for doc_path in _managed_docs(root, ignore):
-        text = (root / doc_path).read_text(encoding="utf-8")
-        managed = parse_frontmatter(text)
-        if managed is None:
-            continue  # unmanaged doc -> ignored
-        if managed.error:
-            out.errors.append(PlanEntry(
-                entry_id=f"{doc_path}#<error>",
-                key=f"{doc_path}#<error>", direction=None, governs="",
-                doc_hash=None, code_hash=None,
-                verdict="error", on_frontier=False, error=managed.error))
-            continue
-        for binding in managed.bindings:
-            doc_region = resolve_doc_region(root, doc_path, binding)
-            for gov in resolve_governed_files(root, binding.governs):
-                key = f"{doc_path}#{binding.doc_anchor}"
-                if gov.error is not None:
-                    out.errors.append(PlanEntry(
-                        entry_id=f"{key}::{binding.governs}",
-                        key=key, direction=managed.direction.value,
-                        governs=binding.governs, doc_hash=None,
-                        code_hash=None, verdict="error", on_frontier=False,
-                        error=gov.error))
-                    continue
-                gov_file = gov.path
-                code_region = resolve_code_region(
-                    root, gov_file, binding.code_anchor)
-                # Identity is per (binding, governed-file): fold in the
-                # governed file (glob expansion) AND the code_anchor, so two
-                # bindings narrowing the same file to different symbols do not
-                # collide into one lockfile row.
-                entry_id = f"{key}::{gov_file}"
-                if binding.code_anchor:
-                    entry_id += f"::{binding.code_anchor}"
-                out.resolved.append(_Resolved(
-                    entry_id=entry_id, key=key, direction=managed.direction,
-                    governs=str(gov_file), doc_region=doc_region,
-                    code_region=code_region, binding=binding,
-                    doc_hash=_safe_hash(root, doc_region),
-                    code_hash=_safe_hash(root, code_region)))
-                out.doc_nodes.append(DocNode(
-                    key=key, region=code_region, node_id=entry_id))
-                if (root / gov_file).suffix == ".py":
-                    out.py_files.add(gov_file)
+    out = Resolution(ignore=load_ignore(root))
     _resolve_manifest(root, out)
     return out
 
 
 def _resolve_manifest(root: Path, out: Resolution) -> None:
-    """Fold `knowform.bindings.json` docstring bindings into the same resolved
-    shape as frontmatter bindings: doc region = the docstring span, code region
-    = the symbol MINUS its docstring (behavior)."""
+    """Resolve every `knowform.bindings.json` binding to hashed regions.
+    Docstring bindings: doc region = the docstring span, code region = the
+    symbol MINUS its docstring (behavior). Markdown bindings: doc region = the
+    heading-anchored span, code region = the governed symbol."""
     manifest = load_manifest(root)
     if manifest is None:
         return
@@ -228,6 +180,40 @@ def _resolve_manifest(root: Path, out: Resolution) -> None:
                 code_hash=_safe_hash(root, code_region)))
             out.doc_nodes.append(DocNode(
                 key=key, region=code_region, node_id=key))
+            if (root / gov_file).suffix == ".py":
+                out.py_files.add(gov_file)
+
+    for mb in manifest.markdown:
+        what = "/".join(mb.heading) + (f"#{mb.block}" if mb.block else "")
+        key = f"{mb.doc}#heading:{what}"
+        anchor = resolve_heading_region(root, Path(mb.doc), mb.heading, mb.block)
+        if anchor.error is not None:
+            out.errors.append(PlanEntry(
+                entry_id=key, key=key, direction=mb.direction.value,
+                governs=mb.governs, doc_hash=None, code_hash=None,
+                verdict="error", on_frontier=False, error=anchor.error))
+            continue
+        doc_region = anchor.region
+        for gov in resolve_governed_files(root, mb.governs):
+            if gov.error is not None:
+                out.errors.append(PlanEntry(
+                    entry_id=key, key=key, direction=mb.direction.value,
+                    governs=mb.governs, doc_hash=None, code_hash=None,
+                    verdict="error", on_frontier=False, error=gov.error))
+                continue
+            gov_file = gov.path
+            code_region = resolve_code_region(root, gov_file, mb.code_anchor)
+            entry_id = f"{key}::{gov_file}"
+            if mb.code_anchor:
+                entry_id += f"::{mb.code_anchor}"
+            out.resolved.append(_Resolved(
+                entry_id=entry_id, key=key, direction=mb.direction,
+                governs=str(gov_file), doc_region=doc_region,
+                code_region=code_region, binding=mb,
+                doc_hash=_safe_hash(root, doc_region),
+                code_hash=_safe_hash(root, code_region)))
+            out.doc_nodes.append(DocNode(
+                key=key, region=code_region, node_id=entry_id))
             if (root / gov_file).suffix == ".py":
                 out.py_files.add(gov_file)
 

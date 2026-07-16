@@ -16,6 +16,7 @@ from pathlib import Path
 
 from .apply import apply
 from .init import INIT_PROPOSAL, init, read_proposal, write_proposal
+from .manifest import MANIFEST
 from .materialize import materialize
 from .plan import plan
 from .sync import sync
@@ -106,9 +107,13 @@ def _cmd_init(args) -> int:
                   file=sys.stderr)
             return 1
         result = materialize(root, proposal)
-        print(f"materialized {len(result.docs_written)} doc(s), "
-              f"{len(result.manifest_entries)} manifest entry(ies)"
-              + (f", {len(result.skipped)} skipped" if result.skipped else ""))
+        msg = (f"materialized {len(result.manifest_entries)} binding(s) "
+               f"into {MANIFEST} (docs untouched)")
+        if result.unanchorable:
+            msg += f", {len(result.unanchorable)} unanchorable"
+        if result.skipped:
+            msg += f", {len(result.skipped)} skipped"
+        print(msg)
         return 0
     matcher = None
     if args.llm:
@@ -155,7 +160,7 @@ def main(argv: list[str] | None = None) -> int:
     i.add_argument("--root", default=".", help="repo root to scan")
     i.add_argument("--write", action="store_true",
                    help="materialize the reviewed knowform.init.json "
-                        "(frontmatter+fences and manifest entries)")
+                        "(out-of-band manifest entries; docs untouched)")
     llm = i.add_mutually_exclusive_group()
     llm.add_argument("--llm", action="store_true",
                      help="Tier-2 fuzzy disambiguation via your local Claude "

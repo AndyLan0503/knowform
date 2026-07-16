@@ -80,18 +80,9 @@ class FuzzyResolveTest(unittest.TestCase):
             self.assertTrue(any(u.identifier == "zzz"
                                 for u in proposal.unmatched))
 
-    def test_hallucinated_symbol_rejected_on_fuzzy(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            _write(root, "config.py", CONFIG)
-            _write(root, "d.md", "# D\n\nUse `parse_cfg()`.\n")
-            stub = StubMatcher(MatchResult(
-                matched=True, code_anchor="def ghost", governs="ghost.py"))
-            proposal = init(root, matcher=stub)
-            self.assertFalse(any(c.source_tier == 2
-                                 for c in proposal.candidates))
-            self.assertTrue(any(u.identifier == "parse_cfg"
-                                for u in proposal.unmatched))
+    # Hallucination rejection (a matcher response outside the presented set)
+    # is covered by test_init_llm.test_hallucinated_symbol_is_rejected - the
+    # same `_accept_match` guard, so it is not re-tested per option-source here.
 
 
 if __name__ == "__main__":

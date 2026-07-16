@@ -129,21 +129,16 @@ class InitDiscoveryTest(unittest.TestCase):
             self.assertFalse(any(u.identifier == "nonexistent"
                                  for u in proposal.unmatched))
 
-    def test_managed_doc_and_bound_symbol_are_skipped(self):
+    def test_bound_symbol_is_not_reproposed(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = self._repo(tmp)
-            managed = (
-                "---\n"
-                "knowform:\n"
-                "  direction: code-is-truth\n"
-                "  bindings:\n"
-                "    - doc_anchor: add\n"
-                "      governs: lib.py\n"
-                "      code_anchor: def add\n"
-                "---\n"
-                "# Managed\n\nThe `add` function.\n"
-            )
-            _write(root, "managed.md", managed)
+            # `def add` is already bound out-of-band via a manifest markdown
+            # binding: init must not re-propose it from any source.
+            _write(root, "bound.md", "# Bound\n\n## Add\n\nThe `add` behavior.\n")
+            _write(root, "knowform.bindings.json", json.dumps(
+                {"version": 1, "markdown": [
+                    {"doc": "bound.md", "heading": ["Add"], "governs": "lib.py",
+                     "code_anchor": "def add", "direction": "code-is-truth"}]}))
             proposal = init(root)
             # lib.py#add already bound: no docstring candidate for it, and the
             # markdown reference to `add` (in guide.md) is skipped too.
@@ -153,9 +148,6 @@ class InitDiscoveryTest(unittest.TestCase):
                                  for c in proposal.candidates))
             # Other documented symbols still surface.
             self.assertIn(("docstring", "lib.py", "class Widget"), cands)
-            # The managed doc itself is not rescanned for references.
-            self.assertFalse(any(c.doc_path == "managed.md"
-                                 for c in proposal.candidates))
 
     def test_existing_manifest_binding_is_skipped(self):
         with tempfile.TemporaryDirectory() as tmp:

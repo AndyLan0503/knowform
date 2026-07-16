@@ -3,8 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from knowform.frontmatter import Direction
-from knowform.manifest import MANIFEST, load
+from knowform.manifest import MANIFEST, Direction, load
 
 
 class ManifestLoadTest(unittest.TestCase):
@@ -57,6 +56,31 @@ class ManifestLoadTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             self._write(root, "{not json")
+            self.assertIsNotNone(load(root).error)
+
+    def test_parses_markdown_binding(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write(root, {"markdown": [
+                {"doc": "README.md", "heading": ["Usage", "Add"],
+                 "governs": "calc.py", "code_anchor": "def add",
+                 "direction": "code-is-truth", "block": 2}]})
+            m = load(root)
+            self.assertIsNone(m.error)
+            self.assertEqual(len(m.markdown), 1)
+            b = m.markdown[0]
+            self.assertEqual(b.doc, "README.md")
+            self.assertEqual(b.heading, ("Usage", "Add"))
+            self.assertEqual(b.governs, "calc.py")
+            self.assertEqual(b.code_anchor, "def add")
+            self.assertEqual(b.direction, Direction.CODE_IS_TRUTH)
+            self.assertEqual(b.block, 2)
+
+    def test_markdown_missing_governs_is_error(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write(root, {"markdown": [
+                {"doc": "README.md", "heading": ["Usage"]}]})
             self.assertIsNotNone(load(root).error)
 
 

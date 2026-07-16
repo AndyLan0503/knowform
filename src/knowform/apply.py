@@ -15,18 +15,19 @@ apply requires recorded state; without a `knowform.lock` it refuses (run `sync`)
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import docstate
 from .docstate import DocState, Record, classify
-from .frontmatter import Direction, replace_fenced_region
 from .gitdiff import head_sha
 from .judge import Generator, VerdictKind, build_frontier
-from .manifest import DocstringBinding
+from .manifest import Direction, DocstringBinding
 from .plan import resolve_bindings
 from .regions import (
-    hash_span, replace_docstring, resolve_doc_region, resolve_docstring_region,
+    hash_span, replace_docstring, resolve_docstring_region,
+    resolve_heading_region,
 )
 
 
@@ -107,7 +108,8 @@ def apply(root: Path, generator: Generator | None = None) -> ApplyResult:
             ok, why = _regenerate_docstring(
                 root, r, generator, updated, blessed_at)
         else:
-            ok, why = _regenerate(root, r, generator, updated, blessed_at)
+            ok, why = _regenerate_markdown(
+                root, r, generator, updated, blessed_at)
         if ok:
             result.applied.append(r.entry_id)
             wrote = True
@@ -120,11 +122,13 @@ def apply(root: Path, generator: Generator | None = None) -> ApplyResult:
     return result.finalize()
 
 
-def _regenerate(root: Path, r, generator: Generator,
-                updated: dict[str, Record], blessed_at: str) -> tuple[bool, str]:
-    """Write regenerated prose into the doc's fenced region and re-bless the
-    record. Returns (False, reason) - writing nothing - when the target is
-    unsafe or the generator output would corrupt the fenced structure."""
+def _regenerate_markdown(root: Path, r, generator: Generator,
+                         updated: dict[str, Record],
+                         blessed_at: str) -> tuple[bool, str]:
+    """Replace the doc's heading-anchored region (its exact line span) with
+    regenerated prose and re-bless. No inline markers: the region is re-resolved
+    by heading after the write. Refuses if the generator emits a heading, which
+    could break the doc structure the anchor depends on."""
     doc_file = root / r.doc_region.path
     # Defense in depth: the walk already excludes symlinks, but re-check right
     # before the write so a swapped path can never escape root (security F1).
@@ -133,17 +137,18 @@ def _regenerate(root: Path, r, generator: Generator,
     item = build_frontier(root, r.key, r.direction, r.binding,
                           r.doc_region, r.code_region)
     new_inner = generator(item)
-    if _has_fence_marker(new_inner, r.binding.doc_anchor):
-        return False, "generator emitted anchor fence markers; refused"
-    new_text = replace_fenced_region(
-        doc_file.read_text(encoding="utf-8"), r.binding.doc_anchor, new_inner)
-    if new_text is None:
-        return False, "anchor fences vanished before write; skipped"
-    doc_file.write_text(new_text, encoding="utf-8")
-    new_region = resolve_doc_region(root, r.doc_region.path, r.binding)
+    if _introduces_heading(new_inner):
+        return False, "generator emitted a markdown heading; refused"
+    lines = doc_file.read_text(encoding="utf-8").split("\n")
+    lines[r.doc_region.start - 1:r.doc_region.end] = new_inner.split("\n")
+    doc_file.write_text("\n".join(lines), encoding="utf-8")
+    back = resolve_heading_region(root, r.doc_region.path,
+                                  r.binding.heading, r.binding.block)
+    if back.error is not None or back.region is None:
+        return False, "anchor could not be re-resolved after write; skipped"
     updated[r.entry_id] = Record(
         direction=r.direction.value, governs=r.governs,
-        doc_hash=hash_span(new_region.text(root)), code_hash=r.code_hash,
+        doc_hash=hash_span(back.region.text(root)), code_hash=r.code_hash,
         last_verdict=VerdictKind.IN_SYNC.value, blessed_at=blessed_at)
     return True, ""
 
@@ -183,6 +188,8 @@ def _within(root: Path, p: Path) -> bool:
         return False
 
 
-def _has_fence_marker(text: str, anchor: str) -> bool:
-    return (f"knowform:{anchor}:start" in text
-            or f"knowform:{anchor}:end" in text)
+_HEADING_LINE = re.compile(r"^\s*#{1,6}\s")
+
+
+def _introduces_heading(text: str) -> bool:
+    return any(_HEADING_LINE.match(ln) for ln in text.split("\n"))

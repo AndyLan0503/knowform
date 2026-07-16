@@ -92,7 +92,7 @@ philosophy applied to onboarding: **propose, never enforce.**
 ```bash
 knowform init                # scan the repo -> knowform.init.json
 $EDITOR knowform.init.json   # keep the good bindings, drop the wrong ones
-knowform init --write        # materialize: frontmatter + fences, manifest entries
+knowform init --write        # record bindings in knowform.bindings.json (docs untouched)
 knowform sync                # bless the newly managed world
 ```
 
@@ -133,39 +133,41 @@ knowform init --anthropic    # use the Anthropic API instead
 Either backend only picks among the enumerated candidates — it can never invent
 a symbol, and its direction hints are clamped to `manual`.
 
-## Managed docs
+## Bindings
 
-A doc opts in with a `knowform:` frontmatter block and marks the region it
-governs with anchor fences:
+Bindings live **out-of-band** in `knowform.bindings.json` at the repo root, so
+your docs and code stay free of any knowform markup — no frontmatter, no fences.
+This matters when docs are fed to LLMs or agents as context: zero binding tokens
+in the prose. There are two kinds:
 
-```markdown
----
-knowform:
-  direction: code-is-truth
-  bindings:
-    - doc_anchor: add-behavior
-      governs: calc.py
-      code_anchor: "def add"
----
-
-# Calc
-
-<!-- knowform:add-behavior:start -->
-`add(a, b)` returns the sum of its two arguments.
-<!-- knowform:add-behavior:end -->
-
-Prose outside the fences is never touched.
+```json
+{
+  "version": 1,
+  "docstrings": [
+    { "governs": "calc.py", "symbol": "def add", "direction": "code-is-truth" }
+  ],
+  "markdown": [
+    { "doc": "guide.md", "heading": ["Calc", "Behavior"], "block": 1,
+      "governs": "calc.py", "code_anchor": "def add",
+      "direction": "code-is-truth" }
+  ]
+}
 ```
 
+- **docstring bindings** track a Python symbol's docstring against its own code.
+- **markdown bindings** anchor a doc region by its **heading path** (exact
+  heading text, top-down) plus an optional 1-based `block` (a paragraph within
+  the section; omit it to bind the whole section). The region is re-resolved
+  from the heading every run, so edits elsewhere never misalign it — and the doc
+  stays plain prose.
 - `governs` is a file or glob, contained to the repo (paths escaping root
-  surface as errors, never crash).
-- `code_anchor` narrows to a symbol via `ast` (`def add`, `class Foo`, or a
-  bare name); without one the whole file is the region.
-- A `.md` with no `knowform:` block is unmanaged and ignored.
+  surface as errors, never crash); `code_anchor` narrows to a symbol via `ast`
+  (`def add`, `class Foo`, or a bare name).
+- A heading that can't be resolved (missing / ambiguous / block out of range)
+  surfaces as an error, never a silent guess. `doc-is-truth` is never inferred.
 
-Rich sidecar frontmatter (titles, tags, ids, whatever your docs system needs)
-can coexist with the `knowform:` block in the same frontmatter — the parser
-reads its own block and ignores the rest.
+You rarely write this by hand — `knowform init` proposes it and `init --write`
+records it.
 
 ## Ignoring paths
 

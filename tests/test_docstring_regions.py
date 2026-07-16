@@ -38,7 +38,7 @@ class DocstringRegionTest(unittest.TestCase):
         self.assertTrue(r.whole)
 
     def test_non_python_degrades_to_whole(self):
-        r = resolve_docstring_region(FIX, Path("managed_add.md"), "def add")
+        r = resolve_docstring_region(FIX, Path("unmanaged.md"), "def add")
         self.assertTrue(r.whole)
 
 

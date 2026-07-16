@@ -2,32 +2,29 @@ import sys
 import unittest
 from pathlib import Path
 
-from knowform.frontmatter import Binding, Direction
+from knowform.manifest import Direction
 from knowform.judge import AnthropicJudge, build_frontier
-from knowform.regions import resolve_code_region, resolve_doc_region
+from knowform.regions import resolve_code_region, resolve_docstring_region
 
 FIX = Path(__file__).parent / "fixtures"
 
 
 class BuildFrontierTest(unittest.TestCase):
     def test_assembles_tight_neighborhood(self):
-        b = Binding(doc_anchor="add-behavior", governs="calc.py",
-                    code_anchor="def add")
-        doc = resolve_doc_region(FIX, Path("managed_add.md"), b)
+        doc = resolve_docstring_region(FIX, Path("documented.py"), "def add")
         code = resolve_code_region(FIX, Path("calc.py"), "def add")
-        item = build_frontier(FIX, "managed_add.md#add-behavior",
-                              Direction.CODE_IS_TRUTH, b, doc, code)
+        item = build_frontier(FIX, "documented.py#add",
+                              Direction.CODE_IS_TRUTH, None, doc, code)
         self.assertEqual(item.direction, Direction.CODE_IS_TRUTH)
-        self.assertIn("returns the sum", item.doc_claim)
+        self.assertIn("sum of a and b", item.doc_claim)
         self.assertIn("return a + b", item.code_text)
         self.assertNotIn("scaled_add", item.code_text)  # tight, not whole file
         self.assertIn("def add(a, b)", item.signatures)
 
     def test_signatures_include_class(self):
         code = resolve_code_region(FIX, Path("calc.py"), "class Accumulator")
-        b = Binding(doc_anchor="x", governs="calc.py")
-        doc = resolve_doc_region(FIX, Path("managed_whole.md"), b)
-        item = build_frontier(FIX, "k", Direction.MANUAL, b, doc, code)
+        doc = resolve_docstring_region(FIX, Path("documented.py"), "class Widget")
+        item = build_frontier(FIX, "k", Direction.MANUAL, None, doc, code)
         self.assertTrue(any("class Accumulator" in s for s in item.signatures))
 
 

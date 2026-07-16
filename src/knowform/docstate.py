@@ -1,10 +1,11 @@
 """`knowform.lock` lockfile: recorded (blessed) hashes + verdict per binding.
 
 JSON reader/writer for the lockfile at repo root, plus the 3-way `classify`
-of recorded-vs-actual change into a verdict. Key = `entry_id`
-(`<doc-path>#<doc_anchor>::<governed-file>`) so glob-expanded rows never
-collide (see the design notes). Human-diffable,
-machine-written by `sync`/`apply`; never hand-edited in practice.
+of recorded-vs-actual change into a verdict. Key = `entry_id`, which folds in
+the governed file and code anchor (e.g. `<doc>#heading:<path>::<file>::<anchor>`
+or `<file>#docstring:<symbol>`) so glob-expanded rows never collide (see the
+design notes). Human-diffable, machine-written by `sync`/`apply`; never
+hand-edited in practice.
 """
 from __future__ import annotations
 

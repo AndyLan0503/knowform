@@ -124,7 +124,7 @@ class InitLlmMaterializeTest(unittest.TestCase):
     def test_llm_candidate_materializes_and_resolves(self):
         from knowform.init import read_proposal, write_proposal
         from knowform.materialize import materialize
-        from knowform.frontmatter import parse_frontmatter
+        from knowform.manifest import load as load_manifest
         from knowform.plan import plan
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -132,15 +132,18 @@ class InitLlmMaterializeTest(unittest.TestCase):
             _write(root, "store.py", STORE)
             _write(root, "queue.py", QUEUE)
             _write(root, "ops.md", OPS)
+            before = (root / "ops.md").read_text()
             stub = StubMatcher(MatchResult(
                 matched=True, code_anchor="def process", governs="store.py"))
             write_proposal(root, init(root, matcher=stub))
             materialize(root, read_proposal(root))
 
-            managed = parse_frontmatter((root / "ops.md").read_text())
-            self.assertIsNotNone(managed)
-            self.assertTrue(any(b.code_anchor == "def process"
-                                for b in managed.bindings))
+            # out-of-band: doc untouched, the binding lives in the manifest
+            self.assertEqual((root / "ops.md").read_text(), before)
+            m = load_manifest(root)
+            self.assertTrue(any(x.doc == "ops.md"
+                                and x.code_anchor == "def process"
+                                for x in m.markdown))
             result = plan(root, base="HEAD")
             self.assertFalse(
                 [e for e in result.entries if e.verdict == "error"])

@@ -1,18 +1,49 @@
+import json
 import subprocess
 import tempfile
 import unittest
 from pathlib import Path
 
 from knowform.judge import JudgeInput, Verdict, VerdictKind
+from knowform.manifest import MANIFEST
 from knowform.plan import plan
 from knowform.sync import sync
 
-FIX = Path(__file__).parent / "fixtures"
+# `scaled_add` calls `add`: a CALLS edge for the transitive blast-radius tests.
+CALC = (
+    '"""Tiny module governed by fixture docs."""\n'
+    "\n\n"
+    "def add(a, b):\n"
+    "    return a + b\n"
+    "\n\n"
+    "def scaled_add(a, b, factor):\n"
+    "    # Calls add: creates a CALLS edge for blast-radius tests.\n"
+    "    return add(a, b) * factor\n"
+)
+
+ADD_DOC = (
+    "# Calc\n\n"
+    "## Add behavior\n\n"
+    "`add(a, b)` returns the sum of its two arguments.\n"
+)
+SCALED_DOC = (
+    "# Scaled\n\n"
+    "## Scaled behavior\n\n"
+    "`scaled_add(a, b, factor)` returns `add(a, b)` multiplied by `factor`.\n"
+)
+
+ADD = "add.md#heading:Add behavior"
+SCALED = "scaled.md#heading:Scaled behavior"
 
 
 def git(root: Path, *args: str) -> None:
     subprocess.run(["git", *args], cwd=root, check=True,
                    capture_output=True, text=True)
+
+
+def _manifest(root: Path, bindings: list[dict]) -> None:
+    (root / MANIFEST).write_text(
+        json.dumps({"version": 1, "markdown": bindings}), encoding="utf-8")
 
 
 class RecordingJudge:
@@ -28,10 +59,17 @@ class RecordingJudge:
 class Repo:
     def __init__(self, tmp: Path):
         self.root = tmp
-        for name in ["calc.py", "managed_add.md", "managed_whole.md",
-                     "managed_scaled.md"]:
-            (self.root / name).write_text(
-                (FIX / name).read_text(encoding="utf-8"), encoding="utf-8")
+        (self.root / "calc.py").write_text(CALC, encoding="utf-8")
+        (self.root / "add.md").write_text(ADD_DOC, encoding="utf-8")
+        (self.root / "scaled.md").write_text(SCALED_DOC, encoding="utf-8")
+        _manifest(self.root, [
+            {"doc": "add.md", "heading": ["Add behavior"],
+             "governs": "calc.py", "code_anchor": "def add",
+             "direction": "code-is-truth"},
+            {"doc": "scaled.md", "heading": ["Scaled behavior"],
+             "governs": "calc.py", "code_anchor": "def scaled_add",
+             "direction": "code-is-truth"},
+        ])
         git(self.root, "init", "-q")
         git(self.root, "config", "user.email", "t@t.t")
         git(self.root, "config", "user.name", "t")
@@ -51,9 +89,6 @@ def entry(result, key):
         if e.key == key:
             return e
     raise AssertionError(f"no {key}: {[e.key for e in result.entries]}")
-
-
-ADD = "managed_add.md#add-behavior"
 
 
 class ThreeWayStateTest(unittest.TestCase):
@@ -78,7 +113,7 @@ class ThreeWayStateTest(unittest.TestCase):
     def test_doc_edit_yields_doc_drift_without_judge(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo = Repo(Path(tmp))
-            repo.edit("managed_add.md", "the sum of its two arguments",
+            repo.edit("add.md", "the sum of its two arguments",
                       "something entirely different now")
             result = plan(repo.root, base="HEAD", judge=None)
             e = entry(result, ADD)
@@ -89,7 +124,7 @@ class ThreeWayStateTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo = Repo(Path(tmp))
             repo.edit("calc.py", "return a + b", "return a + b + 1")
-            repo.edit("managed_add.md", "the sum of its two arguments",
+            repo.edit("add.md", "the sum of its two arguments",
                       "a changed description")
             result = plan(repo.root, base="HEAD", judge=None)
             e = entry(result, ADD)
@@ -105,11 +140,10 @@ class ThreeWayStateTest(unittest.TestCase):
             repo.edit("calc.py", "return a + b", "return a + b + 1")
             judge = RecordingJudge()
             result = plan(repo.root, base="HEAD", judge=judge, depth=2)
-            e = entry(result, "managed_scaled.md#scaled-behavior")
+            e = entry(result, SCALED)
             self.assertTrue(e.on_frontier,
                             "transitive drift must survive recorded state")
-            self.assertIn("managed_scaled.md#scaled-behavior",
-                          {c.key for c in judge.calls})
+            self.assertIn(SCALED, {c.key for c in judge.calls})
 
     def test_transitive_dependent_quiets_after_resync(self):
         # After re-blessing, the transitive risk is gone: no spurious re-flag
@@ -121,8 +155,8 @@ class ThreeWayStateTest(unittest.TestCase):
             judge = RecordingJudge()
             result = plan(repo.root, base="HEAD", judge=judge)
             self.assertEqual(judge.calls, [])
-            self.assertEqual(entry(result, "managed_scaled.md#scaled-behavior")
-                             .verdict, VerdictKind.IN_SYNC.value)
+            self.assertEqual(entry(result, SCALED).verdict,
+                             VerdictKind.IN_SYNC.value)
 
     def test_resync_after_code_edit_returns_to_in_sync(self):
         with tempfile.TemporaryDirectory() as tmp:
