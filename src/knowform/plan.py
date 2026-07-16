@@ -27,7 +27,7 @@ from .regions import (
 @dataclass
 class PlanEntry:
     entry_id: str                # unique per (binding, governed-file)
-    key: str                     # <doc-path>#<doc_anchor>
+    key: str                     # per-binding key (heading/docstring anchor)
     direction: str | None
     governs: str
     doc_hash: str | None

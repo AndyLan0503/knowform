@@ -1,9 +1,9 @@
 """Resolve doc/code regions to normalized, hashed text spans.
 
-A binding's doc region comes from anchor fences (or whole doc); its code
-region from a stdlib-`ast` symbol lookup (or whole file). Precision over
-recall: an unresolved code anchor widens to the whole file, never narrows
-silently (the design notes).
+A binding's doc region comes from a markdown heading anchor or a Python
+docstring span; its code region from a stdlib-`ast` symbol lookup (or whole
+file). Precision over recall: an unresolved code anchor widens to the whole
+file, never narrows silently (the design notes).
 """
 from __future__ import annotations
 
@@ -20,9 +20,10 @@ from .markdown import blocks as _md_blocks, headings as _md_headings
 class Region:
     """A resolved text region: file plus 1-based inclusive line span.
 
-    `whole` marks a file-level degrade (fences absent / anchor unresolved).
-    `exclude` carves a 1-based inclusive line sub-span out of the region (a
-    docstring binding's code region is the symbol MINUS its docstring lines).
+    `whole` marks a file-level degrade (an unresolved code/docstring anchor
+    widens to the whole file). `exclude` carves a 1-based inclusive line
+    sub-span out of the region (a docstring binding's code region is the symbol
+    MINUS its docstring lines).
     """
     path: Path
     start: int
